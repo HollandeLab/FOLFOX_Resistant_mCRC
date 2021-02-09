@@ -1,0 +1,1719 @@
+---
+title: 'DE analysis of tumour samples from patients treated by FOLFOX'
+author: 
+  - name: 'Momeneh (Sepideh) Foroutan'
+    affiliation: 'Prof Hollande Lab'
+    url: https://www.monash.edu/discovery-institute/huntington-lab
+date: '2019-01-04'
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 6
+    gallery: TRUE
+    highlight: tango
+    lightbox: TRUE
+    self_contained: TRUE
+    thumbnails: FALSE
+    number_sections: TRUE	
+    toc_depth: 4
+    use_bookdown: TRUE
+    code_folding: hide
+  html_document2:
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options: 
+  chunk_output_type: inline
+---
+
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+
+# Set up and overview
+
+In this document, we perform DE analysis between Complete Response (CP), Progressive Disease (PD) and Partial Response (PR) groups in patients treated by FOLFOX-based therapies.
+
+We then score the tumour samples against several signatures, including signatures of Immune/Stroma, DDR, TP53, apoptosis, and cell cycle phases.  In addition to these signatures, we also score tumour samples against the signature ontained from organoids, specifically the DEGs from FF_Res_Sen comparison.
+
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+options(max.print = "75")
+
+opts_chunk$set(
+  # echo = FALSE,
+  cache = TRUE,
+  # prompt = FALSE,
+  # tidy = FALSE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  # results = FALSE,
+  root.dir = normalizePath("."))
+
+opts_knit$set(width = 65)
+```
+
+
+```{r set up, warning = F, message = F}
+library(edgeR)
+library(biomaRt)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(Homo.sapiens)  ## for gene annotation
+library(Glimma)
+library(gplots)
+library(msigdf)
+library(plyr)
+library(dplyr)
+
+dataPath <- "../data/RNAseq/Tumour/"
+outPath <- "../output/RNAseq/Tumour/"
+scriptPath <- "../script/"
+figPath <- "../figure/RNAseq/Tumour/"
+sigPath <- "../data/Signatures/"
+orgPath <- "../output/RNAseq/Organoid/"
+
+geneAnnotPath <- "../data/RNAseq/geneAnnotation/"
+
+
+source(paste0(scriptPath, "RLE_ggplot.R"))
+source(paste0(scriptPath, "PCA_plot.R"))
+
+cols <- c(
+  brewer.pal(8, "Dark2")[-5],
+  brewer.pal(10, "Paired"),
+  brewer.pal(12, "Set3"),
+  brewer.pal(9, "Blues")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Oranges")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Greens")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Purples")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Reds")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Greys")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "BuGn")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "PuRd")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "BuPu")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "YlGn")[c(8, 3, 7, 4, 6, 9, 5)])
+
+
+equal_breaks <- function(n = nBreak, s = scalingFactor, ...){
+  function(x){
+    # rescaling
+    d <- s * diff(range(x)) / (1+2*s)
+    round( seq(min(x)+d, max(x)-d, length=n), 2)
+  }
+}
+
+nBreak = 3
+scalingFactor = 0.05
+textSize <- 1.5
+
+
+current_theme <-
+  # scale_x_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+  #   expand = c(scalingFactor, 0)) +
+  # scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+  #   expand = c(scalingFactor, 0)) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = rel(textSize)),
+    panel.grid.minor = element_blank(),
+    # panel.grid.major.x = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title = element_text(size = rel(textSize)),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(angle = 0,
+      size = rel(textSize)),
+    axis.line = element_line(colour = "black"),
+    axis.ticks.x = element_blank(),
+    legend.margin = margin(unit(0, "cm")),
+    legend.title = element_text(face = "italic", size = rel(textSize)),
+    legend.text = element_text(size = rel(textSize)),
+    legend.key.size = unit(2, 'lines'),
+    plot.title = element_text(
+      face = "bold",
+      size = rel(textSize),
+      hjust = 0.5
+    )
+  ) 
+```
+
+
+Read in the data; the DGEList data has 58 samples, but we need to focus on samples that were treated with FOLFOX and showed resistance or sensitivity to therapy.
+```{r}
+dge <- readRDS(paste0(dataPath, "DGEList_Tum.RDS"))
+```
+
+ 
+# Data processing and QC
+
+## Filter and normalise data
+We only want samples that are treated with FF and showed resistance or sensitivity to FF. We have 3 CR, 5 PD and 7 PR samples.
+```{r}
+fftreatedAnnot <- dge$samples[ dge$samples$FOLFOXBase_PrePostOp_RNAseq =="FOLFOX_PreOp",]
+fftreatedAnnot <- fftreatedAnnot[complete.cases(fftreatedAnnot$SampleID), ]
+
+dd <- DGEList(counts = dge$counts, samples = dge$samples, genes = dge$genes)
+# dgeTumFF <- dd[, dd$samples$UniqueIDs  %in% fftreatedAnnot$UniqueIDs]
+dgeTumFF <- dge[, dge$samples$UniqueIDs  %in% fftreatedAnnot$UniqueIDs]
+
+dgeTumFF <-
+  dgeTumFF[, order(factor(dgeTumFF$samples$Response_Tum, levels = c("PD", "PR", "CR")))]
+
+# colnames(dgeTumFF) <- dgeTumFF$samples$UniqueIDs
+
+currentGroup <- dgeTumFF$samples$Response_Tum
+table(currentGroup)
+```
+
+
+```{r}
+# kp <- rowSums(cpm(fc$counts) > 2) >= 12
+## or:
+kp <- filterByExpr(dgeTumFF, group = currentGroup)
+summary(kp)
+
+dgeFilt <- dgeTumFF[kp, ]
+dim(dgeFilt)
+
+dgeFiltNorm <- calcNormFactors(dgeFilt)
+# hist(cpm(dgeFiltNorm$counts, log = T))
+```
+
+## Quality control
+
+```{r}
+### Library sizes
+# barplot(
+#   dgeTumFF$samples$lib.size,
+#   names.arg =  dgeTumFF$samples$UniqueIDs,
+#   las = 2,
+#   cex.names = 0.5
+# )
+```
+
+
+### Distributions
+
+```{r}
+## We also calculate the mean and the median of the library sizes
+L <- mean(dgeTumFF$samples$lib.size) * 1e-6
+M <- median(dgeTumFF$samples$lib.size) * 1e-6
+
+samplenames <- dgeTumFF$samples$UniqueIDs
+
+
+lcpm.cutoff <- log2(10/M + 2/L)
+nsamples <- ncol(dgeTumFF)
+col <- c(brewer.pal(12, "Paired"), brewer.pal(8, "Dark2"))
+par(mfrow = c(1, 2))
+lcpm <- cpm(dgeTumFF, log = TRUE)
+
+plot(
+  density(lcpm[, 1]),
+  col = col[1],
+  lwd = 1,
+  ylim = c(0, 0.5),
+  las = 2,
+  main = "",
+  xlab = ""
+  )
+title(main = "A. Raw data", xlab = "Log-cpm")
+abline(v = lcpm.cutoff, lty = 3)
+
+for (i in 2:nsamples) {
+  den <- density(lcpm[, i])
+  lines(den$x, den$y, 
+    col = col[i], 
+    lwd = 1)
+}
+legend("topright", samplenames, text.col = col, bty = "n", cex = 0.5)
+
+
+lcpm <- cpm(dgeFiltNorm, log = TRUE)
+
+plot(
+  density(lcpm[, 1]),
+  col = col[1],
+  lwd = 1,
+  ylim = c(0, 0.5),
+  las = 2,
+  main = "",
+  xlab = ""
+  )
+title(main = "B. Filtered data", xlab = "Log-cpm")
+abline(v = lcpm.cutoff, lty = 3)
+
+for (i in 2:nsamples) {
+  den <- density(lcpm[, i])
+  lines(den$x, den$y, 
+    col = col[i], 
+    lwd = 1)
+}
+legend("topright", samplenames, text.col = col, bty = "n", cex = 0.5)
+
+```
+
+### RLE plot
+Supp Figure 16.
+```{r fig.height = 5, fig.width = 9, message = F, warning = F}
+lcpm <- cpm(dgeFiltNorm, log = TRUE)
+
+anns <- dge$samples
+anns$PatientID[anns$PatientID == "yP166"] <- "P166"
+
+colfunc <-
+      colorRampPalette(c(
+        brewer.pal(11, 'BrBG')[-c(1, 6, 11)],
+        brewer.pal(11, 'PRGn')[-c(1, 6, 11)],
+        brewer.pal(11, 'RdYlBu')
+      ))
+ 
+
+patientCol  <- colfunc(length(unique(anns$PatientID)))
+names(patientCol) <-
+  unique(as.character(anns$PatientID))[order(unique(as.character(anns$PatientID)))]
+
+
+dgeTumFF$samples$PatientID[dgeTumFF$samples$PatientID == "yP166"] <- "P166"
+
+## take colours for selected samples
+patientCol <- patientCol[names(patientCol)  %in% dgeTumFF$samples$PatientID]
+
+respTumCol <- c(brewer.pal(11, "BrBG")[c(11, 9, 7, 5)])
+names(respTumCol) <- c("PD", "PR", "CR", "Relapse")
+```
+
+```{r}
+rleTheme <-   theme(
+    axis.ticks.x = element_blank(),
+    axis.text.x = element_blank(),
+    
+    axis.text.y = element_text(angle = 0, size = rel(textSize)),
+    
+    strip.background = element_rect(colour = "#f0f0f0", fill = "#f0f0f0"),
+    strip.text = element_text(size = rel(textSize)),
+    
+    axis.line = element_line(colour = "black", size = 1.5),
+    # axis.ticks = element_line(),
+    legend.position = "right",
+    legend.direction = "vertical",
+    
+    legend.margin = margin(unit(0, "cm")),
+    legend.title = element_text(size = rel(textSize * 0.8), face = "italic"),
+    legend.text = element_text(size = rel(textSize * 0.8)),
+    plot.title = element_text(
+      face = "bold",
+      size = rel(textSize),
+      hjust = 0.5
+    )
+  )
+
+
+exprData = lcpm
+
+##----- for tum response to FOLFOX
+
+annot = dgeTumFF$samples[, "Response_Tum", drop = F]
+largeData = F
+textSize = 1.5
+ylim = c(-1, 1)
+mainTitle = "RLE plot coloured by Response outcome"
+cols = respTumCol
+colnames(annot) <- "Annotation"
+
+
+annot$Annotation <- factor(annot$Annotation,
+  levels = unique(annot$Annotation),
+  ordered = TRUE)
+
+rle <- exprData - rowMedians(exprData)
+rleLong <- reshape2::melt(rle)
+
+annot$Var2 <- row.names(annot)
+rleLong <- merge(data.table::data.table(rleLong),
+  data.table::data.table(annot),
+  by = "Var2")
+
+rleLong <- rleLong[order(rleLong$Annotation), ]
+rleLong$Var2 <-
+  factor(rleLong$Var2, levels = unique(rleLong$Var2))
+
+
+# pdf(paste0(figPath, "QC_RLE_TumFF.pdf"),
+#   height = 4,
+#   width = 8)
+
+
+p <- ggplot(rleLong, aes(x = Var2,
+  y = value,
+  fill = Annotation)) +
+  geom_boxplot(outlier.shape = NA,
+    alpha = 0.8, size = 0.1) +
+  theme_classic() +
+  scale_fill_manual(values = cols) +
+  scale_y_continuous(name = "RLE",
+    limits = ylim) +
+scale_x_discrete(name = paste0("Samples (n = ", ncol(exprData), ")")) +
+  geom_hline(yintercept = 0,
+    col = "darkred",
+    lwd = 1) +
+  ggtitle(mainTitle) +
+rleTheme
+  
+p
+
+ ##--- for patients IDs
+
+annot = dgeTumFF$samples[, "PatientID", drop = F]
+
+largeData = F
+textSize = 1.5
+ylim = c(-1, 1)
+mainTitle = "RLE plot coloured by patients' ID"
+
+cols = patientCol
+colnames(annot) <- "Annotation"
+
+annot$Annotation <- factor(annot$Annotation,
+  levels = unique(annot$Annotation),
+  ordered = TRUE)
+
+rle <- exprData - rowMedians(exprData)
+rleLong <- reshape2::melt(rle)
+
+
+annot$Var2 <- row.names(annot)
+rleLong <- merge(data.table::data.table(rleLong),
+  data.table::data.table(annot),
+  by = "Var2")
+
+
+
+rleLong <- rleLong[order(rleLong$Annotation), ]
+rleLong$Var2 <-
+  factor(rleLong$Var2, levels = unique(rleLong$Var2))
+
+
+p <- ggplot(rleLong, aes(x = Var2,
+  y = value,
+  fill = Annotation)) +
+  geom_boxplot(outlier.shape = NA,
+    alpha = 0.8, size = 0.1) +
+  theme_classic() +
+  scale_fill_manual(values = cols) +
+  scale_y_continuous(name = "RLE",
+    limits = ylim) +
+scale_x_discrete(name = paste0("Samples (n = ", ncol(exprData), ")")) +
+  geom_hline(yintercept = 0,
+    col = "darkred",
+    lwd = 1) +
+  ggtitle(mainTitle) +
+rleTheme
+
+
+p
+
+# dev.off()
+```
+
+
+```{r}
+s <- svd(apply(lcpm , 1, function(x) scale(x, scale=FALSE , center = TRUE)))  
+
+anns <- dgeTumFF$samples
+colnames(anns)[colnames(anns) == "SampleID"] <- "SampleIDs"
+anns$SampleID <- colnames(lcpm)
+
+anns$Response_Tum <- factor(anns$Response_Tum, levels = c("PD", "PR", "CR"))
+
+# pdf(paste0(figPath, "QC_PCA_TumFF.pdf"),
+#   height = 8,
+#   width = 8)
+
+
+PCA_plot (
+  expr = lcpm,
+  clin = anns,
+  group_to_test = "Response_Tum",
+  svdResult = s,
+  plot_cex = 1.5,
+  legend_cex = 1.5,
+  labeled = FALSE,
+  group_to_shape = NULL,
+  cols =
+    respTumCol
+  ) 
+
+PCA_plot (
+  expr = lcpm,
+  clin = anns,
+  group_to_test = "PatientID",
+  svdResult = s,
+  plot_cex = 1.5,
+  legend_cex = 1.5,
+  labeled = FALSE,
+  group_to_shape = NULL,
+  cols =
+    patientCol
+  ) 
+
+
+# dev.off()
+
+```
+
+
+# DE analysis
+We include 5 comparisons: 
+
+* PD vs CR
+* PD vs PR
+* PR vs CR
+* PD vs CR & PR
+* PD & PR vs CR
+```{r}
+# currentGroup <- dgeTumFF$samples$Response_Tum
+design <- model.matrix( ~ 0 + currentGroup)
+colnames(design) <- c( 
+  "CR",
+  "PD",
+  "PR")
+
+design
+
+yl <- estimateDisp(dgeFiltNorm, design, robust = TRUE)
+sqrt(yl$common.dispersion)
+```
+
+As there is an outlier sample in teh data, we use voom with quality weights so that the outlier sample is down-weighted when performing DE analysis. 
+```{r}
+# contrastMatrix <- makeContrasts(
+#   ## Comparison within control samples
+#   Progression_Response     = Progression - CompleteResponse,
+#   levels = design)
+## If we only focus on CR and PD: There are 197 genes up regulated and 1180 genes down-regulated.
+
+##----- for comparisons with low DEGs
+contrastMatrix1 <- makeContrasts(
+  ## Comparison within control samples
+  PD_CR     = PD - CR,
+  PD_PR     = PD - PR,
+  PR_CR     = PR - CR,
+  PD_CR.PR     = PD - ((CR + PR)/2),
+  PD.PR_CR     = ((PD + PR)/2) - CR,
+  levels = design)
+
+
+v <- voomWithQualityWeights(yl, design, plot = TRUE)
+
+dupcor <- duplicateCorrelation(v, 
+  design, 
+  block = dgeFiltNorm$samples$PatientID)   
+
+dupcor$consensus.correlation   ## 0.74 for voom -- 0.37 for voomWithQualityWeights
+
+v <- voomWithQualityWeights(yl, 
+  design, 
+  block = dgeFiltNorm$samples$PatientID, 
+  correlation = dupcor$consensus.correlation, 
+  plot = TRUE)
+
+
+vfit <- lmFit(
+  v,
+  design,
+  block = dgeFiltNorm$samples$PatientID,
+  correlation = dupcor$consensus.correlation
+)
+
+
+vfit1 <- contrasts.fit(vfit, contrasts = contrastMatrix1)
+efit1 <- eBayes(vfit1)
+## Plot residual standard deviation versus average log expression for a fitted model
+plotSA(efit1)
+
+summary(decideTests(efit1))
+dt1 <- decideTests(efit1)
+
+
+```
+ 
+
+## Extreact DE stats and DEGs
+```{r}
+top_PD_CR     <- topTable(efit1, coef = "PD_CR", n = Inf)
+top_PD_PR     <- topTable(efit1, coef = "PD_PR", n = Inf)
+top_PR_CR     <- topTable(efit1, coef = "PR_CR", n = Inf)
+top_PD_CR.PR     <- topTable(efit1, coef = "PD_CR.PR", n = Inf)
+top_PD.PR_CR     <- topTable(efit1, coef = "PD.PR_CR", n = Inf)
+
+
+DEStatList <- list(
+  top_PD_CR    = top_PD_CR,
+  top_PD_PR = top_PD_PR,
+  top_PR_CR = top_PR_CR,
+  top_PD_CR.PR = top_PD_CR.PR, 
+  top_PD.PR_CR = top_PD.PR_CR
+)
+
+saveRDS(DEStatList, file = paste0(outPath, "DE_Stats_List_TumFF_AllComparisons.RDS"))
+```
+
+
+## Extract DEGs
+There is no DEGs between PR and CR, suggesting that the expression profile of the PR samples are more similar to those with CR. For DEG_PD_PR and DEG_PD_CR.PR, we use a more stringent threshold to define DEGs.
+
+We concatanate DEGs into one data frame and save it. This reproduces Suppl Table 5b (sheet 2).
+```{r}
+DEG_PD_CR <- topTable(efit1, coef = "PD_CR", n = Inf, sort = "p", p = 0.05, lfc = 1) # TTTY15 and USP9Y
+DEG_PD_PR <- topTreat(efit1, coef = "PD_PR", n = Inf, sort = "p", p = 0.01, lfc = 2)
+
+## no DEGs
+DEG_PR_CR <- topTable(efit1, coef = "PR_CR", n = Inf, sort = "p", p = 0.05, lfc = 1)
+DEG_PD_CR.PR <- topTable(efit1, coef = "PD_CR.PR", n = Inf, sort = "p", p = 0.01, lfc = 2)
+DEG_PD.PR_CR <- topTable(efit1, coef = "PD.PR_CR", n = Inf, sort = "p", p = 0.05, lfc = 1)
+
+
+DEG_PD_CR$Comparison <- "PD_CR"
+
+DEG_PD_PR$Comparison <- "PD_PR"
+# DEG_PR_CR$Comparison <- "PR_CR"
+
+DEG_PD_CR.PR$Comparison <- "PD_CR.PR"
+DEG_PD.PR_CR$Comparison <- "PD.PR_CR"
+
+selCol <- c("Comparison", "GeneID", "SYMBOL", "TXCHROM", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val" )
+
+DEG_PD_CR <- DEG_PD_CR[, selCol]
+DEG_PD_CR.PR <- DEG_PD_CR.PR[, selCol]
+DEG_PD.PR_CR <- DEG_PD.PR_CR[, selCol]
+DEG_PD_PR <- DEG_PD_PR[, selCol]
+# DEG_PR_CR <- DEG_PR_CR[, selCol]
+
+DEGs_Resp <-
+  rbind(DEG_PD_CR, DEG_PD_PR, DEG_PD_CR.PR, DEG_PD.PR_CR)
+
+write.table(DEGs_Resp, paste0(outPath, "DEGs_ResponseComparisons_TumFF_2020July.txt"), sep = "\t", row.names = F)
+
+
+DEGsList_Resp <- list(
+  DEG_PD_CR    = DEG_PD_CR,
+  DEG_PD_CR.PR = DEG_PD_CR.PR,
+  DEG_PD.PR_CR = DEG_PD.PR_CR,
+  DEG_PD_PR = DEG_PD_PR
+  # DEG_PR_CR = DEG_PR_CR
+  ) 
+
+saveRDS(DEGsList_Resp, file = paste0(outPath, "DEGs_ResponseComparisons_TumFF_2020July.RDS"))
+
+table(DEGs_Resp$Comparison)
+```
+
+### Compare DEGs obtained here
+Supp Figure 8a.
+```{r}
+
+allDEGs2 <- DEGs_Resp
+allDEGs2$Direction[allDEGs2$logFC > 0 ] <- 1
+allDEGs2$Direction[allDEGs2$logFC < 0] <- -1
+
+countDEGs <- matrix(0, ncol = length(unique(allDEGs2$Comparison)), nrow = length(unique(allDEGs2$SYMBOL )))
+colnames(countDEGs) <- unique(allDEGs2$Comparison)
+rownames(countDEGs) <- unique(allDEGs2$SYMBOL )
+
+##------- three categories -1, 0, 1
+
+countDEGs3 <- sapply(colnames(countDEGs), function(x){
+  currentColName <- x
+  currentCol <- countDEGs[, currentColName, drop = F]
+  
+  currentComparison <- allDEGs2[allDEGs2$Comparison == currentColName, ]
+  
+  currentComparPos <- currentComparison$SYMBOL [currentComparison$Direction > 0]
+  currentComparNeg <- currentComparison$SYMBOL [currentComparison$Direction < 0]
+  
+  indxPos <- rownames(currentCol) %in% currentComparPos
+  indxNeg <- rownames(currentCol) %in% currentComparNeg
+  
+  currentCol[indxPos] <- 1
+  currentCol[indxNeg] <- -1
+  currentCol
+})
+rownames(countDEGs3) <- rownames(countDEGs)
+
+colnames(countDEGs3) <- sapply(colnames(countDEGs3), function(x) {
+  paste0(x , " (n = ", table(allDEGs2$Comparison)[x], ")")
+})
+
+```
+
+### Heatmap of DEGs from different comparisons
+Here we compare the overlapping genes across some of the comparisons.
+```{r, fig.height=3,fig.width=6}
+DEGs_hm <- ComplexHeatmap::Heatmap(
+  t(countDEGs3),
+  # col = brewer.pal(9, "Set1")[c(2, 9, 4)],
+  col = viridis::viridis(begin = 0.05, end = 0.95, n = 3),
+  name = "DEG direction",
+  column_title = "DEGs from different group comparisons\n in tumours of patients treated by FOLFOX", 
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = T,
+  show_column_names = F, 
+  row_names_gp = gpar(fontsize = 12), 
+  # column_names_gp = gpar(fontsize = 14), 
+  heatmap_legend_param = list(
+    at = c(-1, 0, 1), 
+    labels = c("Down regulated", "No change", "Up regulated"),
+    title = "Direction\nof change",
+    legend_height = unit(6, "cm"), fontsize = 14,
+    title_position = "topcenter"
+),
+  clustering_distance_rows = "manhattan",
+  clustering_method_rows = "ward.D2",
+  clustering_distance_columns = "manhattan",
+  clustering_method_columns = "ward.D2"
+) 
+
+# pdf(
+#   paste0(
+#     figPath,
+#     "Supp_Figure_8a_Heatmap_DEGs_allComparisons_TumFF_Manhattan_WardD2.pdf"
+#   ),
+#   height = 3,
+#   width = 6
+# )
+ComplexHeatmap::draw(DEGs_hm, heatmap_legend_side = "left")
+# dev.off()
+```
+
+# Down-stream analysis
+## KEGG and GO
+To generate KEGG and GO for all different group comparisons, chnage the cc variable below by uncommenting the code. Here, we only perform the KEGG and GO analysis for PD_CR DEGs. This reproduces Supplemntary Tables 6c and 6d [two last sheets]
+```{r}
+cc <- "PD_CR"
+# cc <- unique(DEGs_Resp$Comparison)
+
+for(i in cc) {
+  currentDEGs <- DEGs_Resp[DEGs_Resp$Comparison == i, ]
+  currentDEGs <- currentDEGs[order(currentDEGs$logFC), ]
+  
+  ##----- KEGG and GO analysis
+  IDs_DEGs <- currentDEGs$GeneID
+  universeGenes <- dgeFiltNorm$genes$GeneID
+  
+  kg <- kegga(de = IDs_DEGs,
+    species = "Hs",
+    universe = universeGenes)
+  
+  write.table(
+    topKEGG(kg, number = Inf),
+    paste0(outPath, "KEGG_", i, ".txt"),
+    row.names = T,
+    sep = "\t"
+  )
+  
+  go <- goana(de = IDs_DEGs,
+    species = "Hs",
+    universe = universeGenes)
+  
+  write.table(
+    topGO(go, ontology = "BP", number = Inf),
+    paste0(outPath, "GO_", i, ".txt"),
+    row.names = T,
+    sep = "\t"
+  )
+}
+```
+
+
+## MSigDB Camera test
+Here I read all the MSigDB genes, but only run the command for hallmark gene sets and export the results of the test for different group comparisons; you could uncomment sections of the code in the next chunck to include the test for different categories.
+```{r}
+library(tibble)
+msigdf.human %>% head()
+h <- msigdf.human %>%
+  dplyr::filter(category_code == "hallmark") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         ##  it turns a two-column data frame into a named vector.
+
+c2 <- msigdf.human %>%
+  dplyr::filter(category_code == "c2") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()        
+
+c3 <- msigdf.human %>%
+  dplyr::filter(category_code == "c3") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         
+
+c4 <- msigdf.human %>%
+  dplyr::filter(category_code == "c4") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()       
+
+c6 <- msigdf.human %>%
+  dplyr::filter(category_code == "c6") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()        
+
+c7 <- msigdf.human %>%
+  dplyr::filter(category_code == "c7") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()      
+
+```
+
+```{r}
+cc <- colnames(contrastMatrix1)
+
+for(i in cc) {
+
+  currentContrast <- contrastMatrix1[, i]
+
+  
+  ##----- Hallmark
+  idx.h <- ids2indices(h, id = yl$genes$SYMBOL)
+  cam.h <-
+    camera(yl,
+      idx.h,
+      design,
+      contrast = currentContrast,
+      inter.gene.cor = 0.01)
+  
+  write.table(
+    cam.h,
+    paste0(outPath, "CAMERA_MSigDB.v6.2_Hallmarks_", i, ".txt") ,
+    row.names = T,
+    sep = "\t"
+  )
+  
+  # ##-------- C2
+  # idx.c2 <- ids2indices(c2, id = yl$genes$SYMBOL)
+  # cam.c2 <-
+  #   camera(yl,
+  #     idx.c2,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c2,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C2_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C3
+  # idx.c3 <- ids2indices(c3, id = yl$genes$SYMBOL)
+  # cam.c3 <-
+  #   camera(yl,
+  #     idx.c3,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c3,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C3_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C4
+  # idx.c4 <- ids2indices(c4, id = yl$genes$SYMBOL)
+  # cam.c4 <-
+  #   camera(yl,
+  #     idx.c4,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c4,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C4_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C6
+  # idx.c6 <- ids2indices(c6, id = yl$genes$SYMBOL)
+  # cam.c6 <-
+  #   camera(yl,
+  #     idx.c6,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c6,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C6_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C7
+  # idx.c7 <- ids2indices(c7, id = yl$genes$SYMBOL)
+  # cam.c7 <-
+  #   camera(yl,
+  #     idx.c7,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c7,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C7_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+}
+```
+
+### Heatmap of hallmarks across different groups
+Read the results and generate heatmap; this reproduces Suppl Figure 8b.
+```{r}
+
+fileList <- list.files(outPath)
+hh <- fileList[grepl("CAMERA_MSigDB.v6.2_Hallmark", fileList)]
+hPath <- paste0(outPath, hh)
+
+hList <- lapply(hPath, read.table, header = T, sep = "\t")
+
+names(hList) <- gsub("CAMERA_MSigDB.v6.2_Hallmarks_", "", hh)
+names(hList) <- gsub(".txt", "", names(hList) )
+
+hListSignif <- llply(hList, function(x){
+  x <- x[x$FDR < 0.05, ]
+  x$GeneSet <- rownames(x)
+  return(x)
+})
+
+hData <- ldply(hListSignif)
+
+
+hData$Directions[hData$Direction == "Up"] <- 1
+hData$Directions[hData$Direction == "Down"] <- -1
+
+
+countTerms <- matrix(0, ncol = length(unique(hData$.id)), nrow = length(unique(hData$GeneSet)))
+colnames(countTerms) <- unique(hData$.id)
+rownames(countTerms) <- unique(hData$GeneSet)
+
+##------- three categories -1, 0, 1
+
+countTerm2 <- sapply(colnames(countTerms), function(x){
+  currentColName <- x
+  currentCol <- countTerms[, currentColName, drop = F]
+  
+  currentID <- hData[hData$.id == currentColName, ]
+  
+  currentTermUp <- currentID$GeneSet[currentID$Directions > 0]
+  currentTermDn <- currentID$GeneSet[currentID$Directions < 0]
+  
+  indxUp <- rownames(currentCol) %in% currentTermUp
+  indxDn <- rownames(currentCol) %in% currentTermDn
+  
+  currentCol[indxUp] <- 1
+  currentCol[indxDn] <- -1
+  currentCol
+})
+rownames(countTerm2) <- rownames(countTerms)
+
+colnames(countTerm2) <- sapply(colnames(countTerm2), function(x) {
+  paste0(x , " (n = ", table(hData$.id)[x], ")")
+})
+
+
+rownames(countTerm2) <- gsub("HALLMARK_", "", rownames(countTerm2))
+
+```
+
+```{r, fig.height = 10, fig.width = 7}
+hallmark_hm <- ComplexHeatmap::Heatmap(
+  countTerm2,
+  width = unit(3.5, "cm"),
+  col = brewer.pal(9, "Set1")[c(2, 9, 4)],
+  name = "Direction",
+  column_title = "Significant hallmark gene-sets\nin tum samples treated by FOLFOX",
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = T,
+  show_column_names = T, 
+  row_names_gp = gpar(fontsize = 11), 
+  column_names_gp = gpar(fontsize = 14), 
+  heatmap_legend_param = list(
+    at = c(-1, 0, 1), 
+    labels = c("Down regulated", "No change", "Up regulated"),
+    title = "Direction\nof change",
+    legend_height = unit(6, "cm"), fontsize = 14,
+    title_position = "topcenter"
+),
+  clustering_distance_rows = "manhattan",
+  clustering_method_rows = "ward.D2",
+  clustering_distance_columns = "manhattan",
+  clustering_method_columns = "ward.D2"
+) 
+
+pdf(
+  paste0(
+    figPath,
+    "Supp_Figure_8b_Heatmap_Hallmarks_TumFF_AllComparisons.pdf"
+  ),
+  height = 10,
+  width = 7
+)
+ComplexHeatmap::draw(hallmark_hm, heatmap_legend_side = "left")
+dev.off()
+```
+
+Compare the results of org hallmark (FF_Res_Sen) with tumour data (PD_CR). This reproduces Figure 3c.
+```{r}
+
+hDataOrg <- read.table(
+  paste0(orgPath, "CAMERA_MSigDB.v6.2_Hallmarks_FF_Res_Sen.txt"),
+  header = T,
+  sep = "\t"
+)
+
+hDataOrg <- hDataOrg[hDataOrg$FDR < 0.05, ]
+hDataOrg$.id <- "FF_Res_Sen"
+hDataOrg$GeneSet <- rownames(hDataOrg)
+
+hDataOrg$Directions[hDataOrg$Direction == "Up"] <- 1
+hDataOrg$Directions[hDataOrg$Direction == "Down"] <- -1
+
+hDataAll <- rbind(hData[hData$.id == "PD_CR", ], hDataOrg[, colnames(hData)])
+```
+
+
+```{r}
+countTerms <- matrix(0, ncol = length(unique(hDataAll$.id)), nrow = length(unique(hDataAll$GeneSet)))
+colnames(countTerms) <- unique(hDataAll$.id)
+rownames(countTerms) <- unique(hDataAll$GeneSet)
+
+##------- three categories -1, 0, 1
+
+countTermAll <- sapply(colnames(countTerms), function(x){
+  currentColName <- x
+  currentCol <- countTerms[, currentColName, drop = F]
+  
+  currentID <- hDataAll[hDataAll$.id == currentColName, ]
+  
+  currentTermUp <- currentID$GeneSet[currentID$Directions > 0]
+  currentTermDn <- currentID$GeneSet[currentID$Directions < 0]
+  
+  indxUp <- rownames(currentCol) %in% currentTermUp
+  indxDn <- rownames(currentCol) %in% currentTermDn
+  
+  currentCol[indxUp] <- 1
+  currentCol[indxDn] <- -1
+  currentCol
+})
+rownames(countTermAll) <- rownames(countTerms)
+
+colnames(countTermAll) <- sapply(colnames(countTermAll), function(x) {
+  paste0(x , " (n = ", table(hDataAll$.id)[x], ")")
+})
+
+
+rownames(countTermAll) <- gsub("HALLMARK_", "", rownames(countTermAll))
+```
+
+
+```{r}
+hallmark_hm <- ComplexHeatmap::Heatmap(
+  countTermAll,
+  col = brewer.pal(9, "Set1")[c(2, 9, 4)],
+  name = "Direction",
+  column_title = "Significant hallmark gene-sets\nin tum and org treated by FOLFOX",
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = T,
+  show_column_names = T, 
+  row_names_gp = gpar(fontsize = 8), 
+  heatmap_legend_param = list(
+    at = c(-1, 0, 1), 
+    labels = c("Down regulated", "No change", "Up regulated"),
+    title = "Direction\nof change",
+    legend_height = unit(6, "cm"), fontsize = 1,
+    title_position = "topcenter"
+),
+  clustering_distance_rows = "manhattan",
+  clustering_method_rows = "ward.D2",
+  clustering_distance_columns = "manhattan",
+  clustering_method_columns = "ward.D2"
+) 
+
+pdf(
+  paste0(
+    figPath,
+    "Figure_3c_Heatmap_Hallmarks_TumPD.CR_OrgFF.Res.Sen.pdf"
+  ),
+  height = 8,
+  width = 5
+)
+ComplexHeatmap::draw(hallmark_hm, heatmap_legend_side = "left")
+dev.off()
+```
+
+
+
+# Score tumour samples
+
+In addition to scoring tum data against some molecular signatures (tum and immune related signatures), we would like to  score FOLFOX treated samples against FF_Res_Sen signature from organoids.
+
+## Read signatures
+### Processed Tum signature
+```{r}
+sigTum <- readRDS(paste0(sigPath, "TumSigs_DDR_TP53.RDS"))
+sigImmune <- readRDS(paste0(sigPath, "ImmuneStroma_NK_T_IFN_signatures.RDS"))
+
+imStr <- unique(c(names(sigImmune$Immune_tcga), names(sigImmune$Stroma_tcga)))
+
+```
+
+### E2F and Spindle from Hallmark
+There are **200 genes** from Hallmark as targets of E2F, **37 of which is overlapping with cell cycle** genes. Hallmarke gene sets are considered to be up-regulated... Add these to DDR and TP53- signatures.
+```{r}
+E2F_h <- h$HALLMARK_E2F_TARGETS
+
+E2F_h2 <- alias2SymbolUsingNCBI(E2F_h,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+E2F_h <- E2F_h2$GeneID
+names(E2F_h) <- E2F_h2$Symbol
+E2F_h <- E2F_h[complete.cases(E2F_h)]
+
+
+Spindle_h <- h$HALLMARK_MITOTIC_SPINDLE
+
+Spindle_h2 <- alias2SymbolUsingNCBI(Spindle_h,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+Spindle_h <- Spindle_h2$GeneID
+names(Spindle_h) <- Spindle_h2$Symbol
+Spindle_h <- Spindle_h[complete.cases(Spindle_h)]
+
+
+selSigs0 <- c(
+  sigTum[c("TP53_negative", "DDR_All")],
+  list(E2F_Hallmark = E2F_h),
+  list(Spindle_Hallmark = Spindle_h)
+)
+
+# currentGenes <- unique(unlist(selSigs0))
+names(selSigs0) <-
+  c(
+    "TP53 negative",
+    "DNA damage repair",
+    "E2F (hallmark)",
+    "Spindle (hallmark)"
+  )
+```
+
+
+### Cell cycle genes from WHITFIELD
+We also add signatures from different cell cycle steps.
+```{r}
+
+wh <-  unique(grep("WHITFIELD_CELL_CYCLE", msigdf.human$geneset, value = T))[-1]
+selCellCycleSigs <- msigdf.human %>% 
+  dplyr::filter(geneset   %in% wh) %>% 
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe() 
+  
+names(selCellCycleSigs) <- gsub("WHITFIELD_CELL_CYCLE_", "", names(selCellCycleSigs))
+
+selCellCycleSigs <-
+  lapply(selCellCycleSigs,
+    alias2SymbolUsingNCBI,
+    paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+
+selCellCycleSigs <- sapply(names(selCellCycleSigs), function(x){
+  currentSig <- selCellCycleSigs[[x]]
+  genename <- currentSig$Symbol
+  currentSig <- currentSig$GeneID
+  names(currentSig) <- genename
+  return(currentSig)
+})
+
+```
+
+
+### Apoptosis Signature
+```{r}
+ap <- h$HALLMARK_APOPTOSIS
+ap2 <- alias2SymbolUsingNCBI(ap,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+ap <- ap2$GeneID
+names(ap) <- ap2$Symbol
+ap <- ap[complete.cases(ap)]
+
+ap_Symbol <- names(ap)
+
+apList <- list("Apoptosis (hallmark)" = ap)
+```
+
+
+```{r}
+selSig <- c(selSigs0, selCellCycleSigs, apList)
+selSig <- lapply(selSig, function(x) {
+  x <- x[!duplicated(x)]
+  return(x)
+})
+# currentGenes <- unique(unlist(selSig))
+currentGenes <- unique(unlist(selSig))
+```
+
+
+### Read the DEGs from organoids (FF_Res_Sen).
+```{r}
+## read the update ones from 2020June under org data
+DEGs_org <- readRDS(paste0(orgPath, "DEGs_AllComparisons_OrgFF_2020June.RDS"))
+DEGsData_org <- read.table(paste0(orgPath, "DEGs_AllComparisons_OrgFF_2020June.txt"), header = T, sep = "\t")
+
+## extract the FF_Res_Sen genes
+DEGsData_org <- DEGsData_org[DEGsData_org$Comparison == "FF_Res_Sens", ]
+
+```
+
+
+```{r}
+currentGenes <- unique(c(unlist(selSig), unlist(sigImmune), DEGsData_org$GeneID))
+# currentGenes <- unique(unlist(selSig))
+```
+
+## Filter expression and rank data
+We go back to the DGEList object and filter the data again such that we keep all genes in our signatures. 
+```{r}
+##------ filter, normalise and rank data 
+
+kp2 <-  rowSums(cpm(dge$counts) >= 2) >= 0.5*ncol(dge)
+# kp3 <- dge$genes$ENTREZID %in% gIDs
+kp3 <- dge$genes$ENTREZID %in% c(currentGenes)
+
+summary(kp2)
+summary(kp3)
+
+dgeFilt2 <- dge[kp2 | kp3, ]
+dgeFilt2 <- dgeFilt2[complete.cases(dgeFilt2$genes$ENTREZID), ]
+# row.names(dgeFilt) <-  dgeFilt$genes$Symbol
+ 
+dgeFiltNorm2 <- calcNormFactors(dgeFilt2)
+
+logRPKM <- edgeR::rpkm(dgeFiltNorm2$counts, log = T, gene.length = dgeFiltNorm2$genes$Length)
+
+rankedData <- singscore::rankGenes(logRPKM)
+
+```
+
+
+## Scores for selected signatures
+* Cell cylce phases, DDR, TP53
+* Immune signatures
+* Organoid signature (FF_Res_Sens)
+```{r}
+library(singscore)
+selScores_uniDir <- plyr::llply(selSig, function(s){
+  sc <- simpleScore(rankData = rankedData, 
+    upSet = s, 
+    centerScore = T, 
+    knownDirection = T)
+  return(sc)
+}) 
+
+selScores_immune <- plyr::llply(sigImmune, function(s){
+  sc <- simpleScore(rankData = rankedData, 
+    upSet = s, 
+    centerScore = T, 
+    knownDirection = T)
+  return(sc)
+}) 
+
+
+selScores_org <- simpleScore(rankData = rankedData, 
+    upSet = DEGsData_org$GeneID[DEGsData_org$logFC > 0], 
+    downSet = DEGsData_org$GeneID[DEGsData_org$logFC < 0], 
+    centerScore = T, 
+    knownDirection = T)
+
+##---- combine signayures together:
+
+selScores_all <- c(
+  selScores_uniDir, 
+  selScores_immune,
+  list(FF_Res_Sens = selScores_org[, c("TotalScore", "TotalDispersion")]))
+
+library(plyr)
+selScores_all_annot <- plyr::ldply(selScores_all, function(x){
+  x$PatientID <- dge$samples$PatientID
+  x$UniqueIDs <- dge$samples$UniqueIDs
+  x$FOLFOXBase_PrePostOp_RNAseq <- dge$samples$FOLFOXBase_PrePostOp_RNAseq
+  x$ChemoStatus <- dge$samples$ChemoStatus
+  x$Tissue <- dge$samples$Tissue
+  x$Response_Tum <- dge$samples$Response_Tum
+  return(x)
+})
+
+selScores_all_annot$Response_Tum <- as.character(selScores_all_annot$Response_Tum)
+```
+
+We have 8 naive for FOLFOX and 13 treated for FOLFOX; here we subset to the FOLFOX treated samples.
+```{r}
+
+FF_treated <- selScores_all_annot[
+  selScores_all_annot$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PreOp", ]
+
+
+FF_treated <- FF_treated[complete.cases(FF_treated$Response_Tum), ]
+
+FF_treated$Response_Tum <- factor(FF_treated$Response_Tum, levels = c("PD", "PR", "CR"))
+```
+
+
+### Cell cyle, TP53, DDR and apoptosis scores
+```{r, fig.width = 17, fig.height = 10}
+numCol <- 5
+currentTitle <- "Signature scores for patients' samples treated by FOLFOX\nstratified by treatment outcome"
+# textSize <- 1
+
+ff <- FF_treated %>% 
+  filter(.id  %in%  names(selSig)) %>% 
+  data.frame()
+
+ff$.id <-
+  factor(
+    ff$.id,
+    levels = c(
+      "DNA damage repair",
+      "E2F (hallmark)",
+      "Spindle (hallmark)",
+      "TP53 negative",
+      "Apoptosis (hallmark)",
+      "G1_S",
+      "S",
+      "G2",
+      "G2_M",
+      "M_G1"
+    )
+  )
+
+
+
+p <-  ggplot(data = ff, aes(x = Response_Tum, y = TotalScore,
+      fill = Response_Tum)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.7),
+    width = 0.7,
+    alpha = 0.6,
+    # outlier.shape = NA
+    size = 0.4,
+    outlier.size = 0.2
+  ) +
+  #   ggsignif::geom_signif(
+  #   comparison = list(c("PD", "CR")),
+  #   map_signif_level = T,
+  #   tip_length = 0,
+  #   vjust = 1.4,
+  #   col = "gray40"
+  # ) +
+  geom_jitter(
+    position = position_jitter(0.2),
+    aes(
+      x = Response_Tum,
+      y = TotalScore,
+      fill = Response_Tum
+    ),
+    cex = 2,
+    pch = 21,
+    colour="black",
+    show.legend = F
+  ) +
+  facet_wrap(~ .id, scale = "free", ncol = numCol) +
+  ylab ("Scores") +
+  xlab("") +
+  ggtitle(currentTitle) +
+  scale_fill_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)],
+    name = "Response outcome") +
+  scale_color_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)]) +
+  scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+    expand = c(scalingFactor, 0)) +
+  current_theme
+
+p
+# 
+# ggsave(
+#   filename = "Figure_3e_Boxplot_SigScores_TumFF.png",
+#   plot = p,
+#   device = "png",
+#   # width = 18.5,
+#   width = 16.5,
+#   height = 5.8,
+#   dpi = 600,
+#   path = figPath
+# )
+
+```
+
+### Immune scores
+Supp Figure 8ed.
+```{r, fig.width = 17, fig.height = 10}
+
+ff <- FF_treated[FF_treated$.id %in% c(
+  "Immune_tcga", "Interferon_imsig", "NK_cur", "Stroma_tcga", "T.CELL"
+), ]
+
+ff$.id[ff$.id == "Immune_tcga"] <- "Immune"
+ff$.id[ff$.id == "Interferon_imsig"] <- "Interferon"
+ff$.id[ff$.id == "NK_cur"] <- "NK cell"
+ff$.id[ff$.id == "Stroma_tcga"] <- "Stroma"
+ff$.id[ff$.id == "T.CELL"] <- "T cell"
+
+numCol <- 5
+currentTitle <- "Immune related signature scores in patients' samples \ntreated by FOLFOX, stratified by response outcome"
+textSize <- 1
+
+p <-  ggplot(data = ff) +
+  geom_boxplot(
+    aes(x = Response_Tum, y = TotalScore,
+      fill = Response_Tum),
+    position = position_dodge(width = 0.7),
+    width = 0.7,
+    alpha = 0.6,
+    # outlier.shape = NA
+    size = 0.4,
+    outlier.size = 0.2
+  ) +
+  geom_jitter(
+    position = position_jitter(0.2),
+    aes(
+      x = Response_Tum,
+      y = TotalScore,
+      fill = Response_Tum
+    ),
+    cex = 2,
+    pch = 21,
+    colour="black",
+    show.legend = F
+  ) +
+  facet_wrap(~ .id, scale = "free", ncol = numCol) +
+  ylab ("Scores") +
+  xlab("") +
+  ggtitle(currentTitle) +
+  scale_fill_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)],
+    name = "Response\noutcome") +
+  scale_color_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)]) +
+  scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+    expand = c(scalingFactor, 0)) +
+  current_theme
+
+p
+
+
+# ggsave(
+#   filename = "Supp_Figure_8d_Boxplot_ImmuneStromaScores_TumFF.png",
+#   plot = p,
+#   device = "png",
+#   width = 12,
+#   height = 3,
+#   dpi = 600,
+#   path = figPath
+# )
+
+```
+
+### FF_Res_Sens scores 
+Figure 3f.
+```{r}
+
+ff <- FF_treated[FF_treated$.id %in% c(
+  "FF_Res_Sens"
+), ]
+
+
+numCol <- 1
+currentTitle <- ""
+textSize <- 1
+
+p <-  ggplot(data = ff) +
+  geom_boxplot(
+    aes(x = Response_Tum, y = TotalScore,
+      fill = Response_Tum),
+    position = position_dodge(width = 0.7),
+    width = 0.7,
+    alpha = 0.6,
+    # outlier.shape = NA
+    size = 0.4,
+    outlier.size = 0.2
+  ) +
+  geom_jitter(
+    position = position_jitter(0.2),
+    aes(
+      x = Response_Tum,
+      y = TotalScore,
+      fill = Response_Tum
+    ),
+    cex = 2,
+    pch = 21,
+    colour="black",
+    show.legend = F
+  ) +
+  facet_wrap(~ .id, scale = "free", ncol = numCol) +
+  ylab ("Scores") +
+  xlab("") +
+  ggtitle(currentTitle) +
+  scale_fill_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)],
+    name = "Response\noutcome") +
+  scale_color_manual(values = brewer.pal(11, "BrBG")[c(11, 9, 7)]) +
+  scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+    expand = c(scalingFactor, 0)) +
+  current_theme
+
+p
+
+
+# ggsave(
+#   filename = "Figure_3f_Boxplot_FF_Res_Sen_Scores_TumFF.png",
+#   plot = p,
+#   device = "png",
+#   width = 4.2,
+#   height = 4,
+#   dpi = 600,
+#   path = figPath
+# )
+```
+
+## Heatmap of E2F/Immune genes in PD_CR
+Reproduce Suppl Figure 8c. 
+```{r}
+e2fH_DEGs <- intersect(DEG_PD_CR$SYMBOL, names(selSig$`E2F (hallmark)`))
+imStr_DEGs <- intersect(DEG_PD_CR$SYMBOL, imStr)
+
+currentDEGs <- DEG_PD_CR[DEG_PD_CR$SYMBOL  %in% c(e2fH_DEGs, imStr_DEGs), ]
+
+
+design0 <- model.matrix(~ 0 +
+    dgeTumFF$samples$Response_Tum)
+
+kp <- filterByExpr(dgeTumFF, design = design0)
+summary(kp)
+
+kp2 <- rownames(dgeTumFF) %in% currentDEGs$GeneID
+summary(kp2)
+
+dgeFilt0 <- dgeTumFF[kp | kp2, ]
+
+dgeFilt0 <- dgeFilt0[complete.cases(dgeFilt0$genes$SYMBOL), ]
+row.names(dgeFilt0) <-  dgeFilt0$genes$SYMBOL
+
+dgeFiltNorm0 <- calcNormFactors(dgeFilt0)
+logCPM <- edgeR::cpm(dgeFiltNorm0$counts, log = T)
+
+logRPKM0 <-
+  edgeR::rpkm(dgeFiltNorm0$counts,
+    log = T,
+    gene.length = dgeFiltNorm0$genes$Length)
+```
+
+```{r, fig.height = 9, fig.width = 7}
+annotData = dgeTumFF$samples
+    ##-------------------------- Set up colours for the heatmap:
+    ##---- patients' colours
+colfunc <-
+  colorRampPalette(c(
+    brewer.pal(11, 'BrBG')[-c(1, 6, 11)],
+    brewer.pal(11, 'PRGn')[-c(1, 6, 11)],
+    brewer.pal(11, 'RdYlBu')
+  ))
+    
+patientCol  <- colfunc(length(unique(annotData$PatientID)))
+names(patientCol) <-
+  unique(as.character(annotData$PatientID))[order(unique(as.character(annotData$PatientID)))]
+    
+
+respTumCol <- c(brewer.pal(11, "BrBG")[c(11, 9, 7)])
+names(respTumCol) <- c("PD", "PR", "CR")
+
+
+currentCol <-  list(
+  PatientID = patientCol,
+  Response_Tum = respTumCol
+)
+
+
+currentTitle <- "E2F, immune and stroma genes\nthat are DE between PD and CR"
+
+## for Res and Sen in tum data
+subsetSamples <- (dgeTumFF$samples$Response_Tum == "CR" |
+  dgeTumFF$samples$Response_Tum == "PD") &
+  (! is.na(dgeTumFF$samples$Response_Tum))
+
+subsetSampleNames <- dgeFiltNorm$samples$UniqueIDs[subsetSamples]
+
+##--- 
+currentData <- logCPM[currentDEGs$SYMBOL[
+  currentDEGs$SYMBOL %in% rownames(logCPM)], subsetSamples]
+
+currentAnnot <- dgeFiltNorm0$samples[subsetSamples, ]
+
+dim(currentData)
+
+## scale data for heatmap
+ex <- t(scale(t(currentData)))
+
+
+##---- for spindle vs immune/stroma set
+currentDEGs$Gene_group[currentDEGs$SYMBOL %in% imStr_DEGs] <- "Immune/Stroma"
+currentDEGs$Gene_group[currentDEGs$SYMBOL %in% e2fH_DEGs] <- "E2F"
+
+geneType <- data.frame(Gene_group = currentDEGs$Gene_group)
+rownames(geneType) <- rownames(currentDEGs)
+
+
+
+geneCol <- brewer.pal(8,"Paired")[c(1,2)]
+names(geneCol) <- c("Immune/Stroma", "E2F") 
+
+
+textSize <- 16
+
+geneHmAnn <- HeatmapAnnotation(
+  df = geneType,
+  col =   list(
+    Gene_group = geneCol
+  ), 
+  
+  annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+      labels_gp = gpar(fontsize = textSize),
+    grid_height = unit(0.8, "cm")
+    ), 
+  which = "row", show_annotation_name = F
+)
+
+##------- Heat map for samples
+ss <-
+      sapply(names(currentCol), function(x)
+        list(
+          list(
+            legend_direction = "horizontal",
+            nrow = 2,
+            title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+            labels_gp = gpar(fontsize = textSize), 
+            grid_height = unit(0.8, "cm")
+          )
+        ))
+
+
+annotColumns <- c("PatientID", "Response_Tum")
+ss <- ss[annotColumns]
+
+ 
+sampleAnnotHm <-
+  HeatmapAnnotation(df = currentAnnot[, annotColumns, drop = F],
+    col = currentCol,
+    annotation_name_side = "left", 
+    annotation_legend_param = ss,
+    ## Added this:
+    annotation_name_gp = gpar(fontsize = textSize))
+
+
+minExpr <- min(ex)
+maxExpr <- max(ex)
+
+
+
+expr_hm <- ComplexHeatmap::Heatmap(
+  ex,
+  col = circlize::colorRamp2(c(minExpr, maxExpr), c("yellow3" , "navy")),
+  name = "logExpr",
+  column_title = currentTitle, column_title_gp = gpar(fontsize =  textSize + 2
+    # fontface = "bold"
+    ),
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = F,
+  show_column_names = F, 
+  row_names_gp = gpar(fontsize = 3), 
+  top_annotation = sampleAnnotHm,
+  left_annotation = geneHmAnn,
+  # right_annotation = geneHmAnn,
+  # bottom_annotation = sampleScoresAnn,
+  na_col = "gray90", 
+  heatmap_legend_param = list(
+          title_position = "topcenter",
+          title = "Scaled log(CPM)",
+          title_gp = gpar(fontsize =  textSize, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          color_bar = "continuous", 
+          legend_direction = "horizontal",
+          legend_width = unit(5, "cm")
+          # legend_height = unit(3, "cm")
+        )
+        # top_annotation = sampleAnnotHm,
+        # right_annotation = geneHmAnn,
+      )
+
+# pdf(paste0(figPath, "Supp_Figure_8c_Heatmap_E2F_ImmuneStroma_TumFF_PD_CR.pdf"),
+  # height = 9, width = 7)
+    ComplexHeatmap::draw(
+      expr_hm,
+      heatmap_legend_side = "bottom",
+      annotation_legend_side = "bottom",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic")
+    )
+# dev.off()
+
+ 
+```
+
+```{r}
+sessionInfo()
+```
+
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 598px;"></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

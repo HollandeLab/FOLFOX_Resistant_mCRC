@@ -1,0 +1,366 @@
+---
+title: 'Examine the consistency between tumour and PDTO RNA-seq data'
+author: 
+  - name: 'Momeneh (Sepideh) Foroutan'
+    affiliation: 'Prof Hollande Lab'
+    url: https://www.monash.edu/discovery-institute/huntington-lab
+date: '2019-01-04'
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 6
+    gallery: TRUE
+    highlight: tango
+    lightbox: TRUE
+    self_contained: TRUE
+    thumbnails: FALSE
+    number_sections: TRUE	
+    toc_depth: 4
+    use_bookdown: TRUE
+    code_folding: hide
+  html_document2:
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options: 
+  chunk_output_type: inline
+---
+
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+# Set up and overview
+This document contains code for reproducing the results of the consistency analysis between the tumour and PDTOs transcriptomics data, reported in [Behrenbruch and Foroutan et al manuscript](https://www.biorxiv.org/content/10.1101/2021.02.04.429849v1).
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+options(max.print = "75")
+
+opts_chunk$set(
+  cache = TRUE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  root.dir = normalizePath("."))
+
+opts_knit$set(width = 65)
+```
+
+```{r, warning = F, messagae = F}
+library(RColorBrewer)
+library(tidyverse)
+
+
+tumPath     <-  "../data/RNAseq/Tumour/"
+orgPath     <- "../data/RNAseq/Organoid/"
+sccriptPath <- "../script/"
+
+outPath <- "../output/RNAseq/Tum_Org_Consistency/"
+figPath <- "../figure/RNAseq/Tum_Org_Consistency/"
+
+textSize <- 2
+current_theme <-
+  theme_bw() +
+  theme(
+  strip.text = element_text(size = rel(textSize), face = "bold"),
+  panel.grid.minor = element_blank(),
+  axis.title = element_text(size = rel(textSize)),
+  axis.text.x = element_text(
+  angle = 0,
+  size = rel(textSize)
+  ),
+  axis.text.y = element_text(
+  angle = 0,
+  size = rel(textSize)
+  ),
+  axis.line = element_line(colour = "black"),
+  axis.ticks.x = element_blank(),
+  legend.margin = margin(unit(0, "cm")),
+  legend.title = element_text(face = "italic", size = rel(textSize)),
+  legend.text = element_text(size = rel(textSize)),
+  legend.key.size = unit(2, 'lines'),
+  plot.title = element_text(
+  face = "bold",
+  size = rel(textSize),
+  hjust = 0.5
+  )
+  ) 
+```
+
+# Reading and preparing data
+
+
+```{r}
+
+dgeTum <- readRDS(paste0(tumPath, "DGEList_Tum.RDS"))
+## remove the low quality sample: P002_CoT_Tum
+dgeTum <- dgeTum[, ! grepl("P002_CoT_Tum", colnames(dgeTum))]
+
+dgeOrgExtra <- readRDS(paste0(orgPath, "DGEList_Orgs_All.RDS"))
+
+```
+
+
+Extract samples which have matched Org and Tum data in terms of RNA-seq. There are 18 matched samples.
+```{r}
+annMatched <- dgeTum$samples[! is.na(dgeTum$samples$Matched_TumOrg_RNAseq), ]
+dim(annMatched)
+```
+
+# Merge replicated samples in the org data
+For the org data, we have replicated samples, so we can calculate their sumTechRep:
+```{r}
+Org <- dgeOrgExtra[, ! grepl("FOLFOX", dgeOrgExtra$samples$Treatment)]
+dim(Org)
+```
+
+## Sum Technical Replicates
+The data for TMB and MSI (genomic) scoring was prepared by merging replicate samples. Therefore, we need to merge these samples in our data as well so that it is compatible.
+ 
+```{r}
+OrgMerg <- sumTechReps(dgeOrgExtra, ID = dgeOrgExtra$samples$SampleID)
+dim(OrgMerg$samples) 
+
+
+dge_Org <- OrgMerg
+colnames(dge_Org) <- paste(colnames(dge_Org), "Org", sep = "_")
+
+dge_Tum <- DGEList(counts = dgeTum$counts, samples = dgeTum$samples, genes = dgeTum$genes)
+# dge_Tum <- dgeTum
+```
+
+
+
+
+# Subset data to matched samples
+```{r}
+annMatched$UniqueIDs_Tum <- annMatched$UniqueIDs
+annMatched$UniqueIDs_Org <- gsub("Tum", "Org", annMatched$UniqueIDs)
+
+annMatched$UniqueIDs_Org[annMatched$UniqueIDs_Org == "P190_A_LT_Org"] <- "yP190_A_LT_Org"
+
+annMatched$UniqueIDs_Org[ ! annMatched$UniqueIDs_Org %in% colnames(dge_Org)]
+annMatched$UniqueIDs_Tum[ ! annMatched$UniqueIDs_Tum %in% colnames(dge_Tum)]
+
+```
+
+Subset the two expression data (for org and tum) to the matched samples, and make sure the order of samples are the same. The rownames (gene names/IDs) are also consistent.
+
+
+```{r}
+all(rownames(dge_Tum) == rownames(dge_Org))
+
+dge_Org <- dge_Org[, annMatched$UniqueIDs_Org ]
+dge_Tum <- dge_Tum[, annMatched$UniqueIDs_Tum ]
+
+dge_Org <- dge_Org[, order(colnames(dge_Org))]
+dge_Tum <- dge_Tum[, order(colnames(dge_Tum))]
+```
+
+
+We merge every two matched samples together and then plot the consistency.
+
+# Correlation plots
+Here, we regenrate Figure 1b.
+```{r,warning=F, message=F, fig.height=6, fig.width=6}
+library(ggplot2)
+
+textSize <- 2
+
+corr_eqn <- function(x, y, digits = 2) {
+  corr_coef <- round(cor(x, y, method = "spearman"), digits = digits)
+  paste("italic(p) == ", corr_coef)
+}
+
+corVec <- numeric()
+
+# pdf(
+#   paste0(figPath, "Figure_1b_Consistency_Org_Tum_Corplots.pdf"),
+#   width = 6,
+#   height = 6
+# )
+
+for (i in 1:18) {
+  
+  currentData <- cbind( dge_Org$counts[,i ], dge_Tum$counts[,i ])
+  colnames(currentData) <- c( colnames(dge_Org)[i], colnames(dge_Tum)[i])
+  
+  kp <- rowSums(cpm(currentData) > 1) >= 1
+
+  currentDataFilt <- currentData[kp, ]
+
+  logRPKM <- rpkm(currentDataFilt, log = T, prior.count = 2, dge_Org$genes$Length[kp])
+  logRPKM <- data.frame(logRPKM)
+  
+  p <- ggplot(logRPKM,
+    aes_string(
+      x = colnames(logRPKM)[1],
+      y = colnames(logRPKM)[2])
+    ) +
+    geom_point(alpha = 0.1, col = "darkred") +
+    geom_density_2d(size = 0.5)
+  
+  ## add correlation values to the plots
+  corVal <- corr_eqn(logRPKM[, 1], logRPKM[, 2])
+  corVec <- c(corVec, corVal)
+  
+  labels <-
+    data.frame(x = 1,
+      y = 14,
+      label = corVal)
+
+  print(
+    p + geom_text(
+      data = labels,
+      aes(x = x, y = y,
+        label = label),
+      parse = TRUE,
+      size = 8
+    ) +
+      xlim(c(-1, 15)) +
+      ylim(c(-1, 15)) +
+      theme_bw() +
+      theme(
+        axis.title = element_text(size = rel(textSize)),
+        axis.text  = element_text(size = rel(textSize)),
+        axis.line = element_line(size = 1)
+      )
+  )
+
+  # print(  limma::plotMA(logRPKM,
+  #   main = paste0(colnames(logRPKM)[1], " vs. ", colnames(logRPKM)[2]),
+  #   xlab = "Average log (expression)",
+  #   ylab = "Log-ratio (expression)",
+  #   ylim = c(-12, 10)))
+  # 
+  # abline(h = 0, col = "dark blue", lwd = 2)
+}
+# dev.off()
+  
+```
+
+# Log Ratio plot
+Also related to Figure 1b (right panel).
+```{r}
+
+corVec <- numeric()
+M_data <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(M_data) <- c("MVal", "Pair")
+
+for (i in 1:18) {
+  currentData <- cbind( dge_Org$counts[,i ], dge_Tum$counts[,i ])
+  colnames(currentData) <- c( colnames(dge_Org)[i], colnames(dge_Tum)[i])
+  
+  kp <- rowSums(cpm(currentData) > 1) >= 1
+
+  currentDataFilt <- currentData[kp, ]
+  
+  logRPKM <- rpkm(currentDataFilt, log = T, prior.count = 2, dge_Org$genes$Length[kp])
+  logRPKM <- data.frame(logRPKM)
+
+  corVal <- corr_eqn(logRPKM[, 1], logRPKM[, 2])
+  corVec <- c(corVec, corVal)
+  
+  
+  MVal <- logRPKM[, 1] - logRPKM[, 2]
+  currentMVal <- data.frame(MVal)
+  currentMVal$Pair <- colnames(currentData)[1]
+  M_data <- rbind(M_data, currentMVal)
+}
+
+
+
+corVec2 <- sapply(corVec, function(x) unlist(strsplit (x, " "))[[4]])
+corVec2 <- as.numeric(corVec2)
+names(corVec2) <- paste(colnames(dge_Org), "Tum", sep = "_")
+corVecData <- data.frame(corVec2)
+colnames(corVecData) <- "CorRNAseq_TumOrg"
+
+# write.table(corVecData, paste0(outPath, "CorRNAseq_MatchedTumOrg_Spearman.txt"), sep = "\t", row.names = T)
+```
+
+
+```{r, fig.height = 6,  fig.width = 9}
+M_data$Pair <- gsub("_Org", "", M_data$Pair)
+
+## remove P002:
+# M_data <- M_data[!M_data$Pair == "P002_CoT", ]
+
+statTable <- M_data %>%
+  group_by(Pair) %>%
+  dplyr::summarise(
+    Min = quantile(MVal, probs = 0.0),
+    Q1 = quantile(MVal, probs = 0.25),
+    Median = quantile(MVal, probs = 0.5),
+    Q3 = quantile(MVal, probs = 0.75),
+    Max = quantile(MVal, probs = 1),
+    DiffQ3Q1 = Q3 - Q1
+  ) %>%
+  arrange(DiffQ3Q1)
+
+bporder <- as.character(statTable$Pair)
+
+# pdf(
+#   paste0(figPath, "Figure_1b_Consistency_Boxplot_LogRatio.pdf"),
+#   height = 6,
+#   width = 9
+# )
+ggplot(M_data,
+  aes(x = factor(M_data$Pair,
+    levels = bporder),
+    y = MVal, col)) +
+  geom_boxplot(outlier.shape = NA) +
+  ylab("Log-ratio (expression)") +
+  xlab("") +
+  ylim(c(-5, 5)) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = rel(textSize), face = "bold"),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(size = rel(textSize)),
+    axis.text.x = element_text(angle = 60, hjust = 1,
+      size = rel(textSize)),
+    axis.text.y = element_text(angle = 0,
+      size = rel(textSize)),
+    axis.line = element_line(colour = "black"),
+    axis.ticks.x = element_blank(),
+    legend.margin = margin(unit(0, "cm")),
+    legend.title = element_text(face = "italic", size = rel(textSize)),
+    legend.text = element_text(size = rel(textSize)),
+    legend.key.size = unit(2, 'lines'),
+    plot.title = element_text(
+      face = "bold",
+      size = rel(textSize),
+      hjust = 0.5
+    )
+  ) 
+
+# dev.off()
+```
+
+
+```{r}
+sessionInfo()
+```
+
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 598px;"></div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+

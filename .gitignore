@@ -1,0 +1,17 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+report/*.html
+report/3prime_Tum_Org_Consistency_cache/
+report/3prime_Tum_Org_Consistency_files/
+report/DEanalysis_org_FF_cache/
+report/DEanalysis_org_FF_files/
+report/DEanalysis_Tum_FF_cache/
+report/DEanalysis_Tum_FF_files/
+
+output/RNAseq/Organoid/DE_Stats_List_AllComparisons_OrgFF_2020June.RDS
+output/RNAseq/Tumour/DE_Stats_List_TumFF_AllComparisons.RDS
+
+

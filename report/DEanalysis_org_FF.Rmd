@@ -1,0 +1,1623 @@
+---
+title: 'DE analysis of patient derived tumour organoids (PDTOs) treated by FOLFOX'
+author: 
+  - name: 'Momeneh (Sepideh) Foroutan'
+    affiliation: 'Prof Hollande Lab'
+    url: https://www.monash.edu/discovery-institute/huntington-lab
+date: '2019-01-04'
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 6
+    gallery: TRUE
+    highlight: tango
+    lightbox: TRUE
+    self_contained: TRUE
+    thumbnails: FALSE
+    number_sections: TRUE	
+    toc_depth: 4
+    use_bookdown: TRUE
+    code_folding: hide
+  html_document2:
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options: 
+  chunk_output_type: inline
+---
+
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+
+# Overview and set up
+This document contains code for reproducing teh results of the PDTOs transcriptomics analysis reported in [Behrenbruch and Foroutan et al manuscript](https://www.biorxiv.org/content/10.1101/2021.02.04.429849v1). All the experimental work for these data have been done by Dr Corina Behrenbruch in Prof Hollande's Lab at the university of Melbourne. 
+
+We have  107 organoids, including control and FOLFOX treated samples, that were run across two sequencing runs. In this document we obtain DEGs between organoids with different response to FOLFOX.
+
+
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+options(max.print = "75")
+
+opts_chunk$set(
+  # echo = FALSE,
+  cache = TRUE,
+  # prompt = FALSE,
+  # tidy = FALSE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  # results = FALSE,
+  root.dir = normalizePath("."))
+
+opts_knit$set(width = 65)
+```
+
+
+```{r message = F, warning = F}
+library(edgeR)
+library(org.Hs.eg.db)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(GO.db)
+library(tidyverse)
+# devtools::install_github("toledoem/msigdf")
+library(msigdf)
+library(singscore)
+
+dataPath <- "../data/RNAseq/Organoid/"
+outPath <- "../output/RNAseq/Organoid/"
+scriptPath <- "../script/"
+figPath <- "../figure/RNAseq/Organoid/"
+sigPath <- "../data/Signatures/"
+
+geneAnnotPath <- "../data/RNAseq/geneAnnotation/"
+
+equal_breaks <- function(n = nBreak, s = scalingFactor, ...){
+  function(x){
+    # rescaling
+    d <- s * diff(range(x)) / (1+2*s)
+    round( seq(min(x)+d, max(x)-d, length=n), 2)
+  }
+}
+
+nBreak = 3
+scalingFactor = 0.05
+textSize <- 1.5
+
+
+current_theme <-
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = rel(textSize)),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title = element_text(size = rel(textSize)),
+    axis.text.x = element_blank(),
+    axis.text.y = element_text(angle = 0,
+      size = rel(textSize)),
+    axis.line = element_line(colour = "black"),
+    axis.ticks.x = element_blank(),
+    # legend.position = "bottom",
+    # legend.direction = "horizontal",
+    legend.margin = margin(unit(0, "cm")),
+    legend.title = element_text(size = rel(textSize), face = "italic"),
+    legend.text = element_text(size = rel(textSize)),
+    plot.title = element_text(
+      face = "bold",
+      size = rel(textSize),
+      hjust = 0.5
+    )
+  )
+
+
+cols <- c(
+  brewer.pal(8, "Dark2")[-5],
+  brewer.pal(10, "Paired"),
+  brewer.pal(12, "Set3"),
+  brewer.pal(9, "Blues")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Oranges")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Greens")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Purples")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Reds")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "Greys")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "BuGn")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "PuRd")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "BuPu")[c(8, 3, 7, 4, 6, 9, 5)],
+  brewer.pal(9, "YlGn")[c(8, 3, 7, 4, 6, 9, 5)])
+
+## functions for quality control
+source("../script/RLE_ggplot.R")
+source("../script/PCA_plot.R")
+# We source to a custom function based on ComplexHeatmap to generate different heatmaps.
+source(paste0(scriptPath, "plotHeatmapExpr_Orgs.R"))
+```
+
+
+```{r}
+dge <- readRDS(paste0(dataPath, "DGEList_Orgs.RDS"))
+
+```
+
+# Data processing and QC
+## Filter and normalise data
+ 
+Note that all resistant samples are those from naive patients, while we have some samples from a chemo-treated patient in the sensitive group.
+
+* **Sensitive** patients samples are (n = 30 from 4 samples):\n
+* **Semi-sensitive** patients samples are (n = 51 from 7 samples):\n
+* **Resistant** patients samples are (n = 26 from 3 samples):\n
+The smallest group is Control_Resistant or FOLFOX_Resistant with 13 samples. 
+
+
+Filter the data for low-expressed genes. Here, I use the DGEList and filter genes using the filterByExpr function from edgeR package.
+```{r}
+
+design0 <- model.matrix(~ 0 +
+    dge$samples$Treatment_Response)
+kp <- filterByExpr(dge, design = design0)
+
+summary(kp)
+dgeFilt <- dge[kp, ]
+dgeFilt <- dgeFilt[complete.cases(dgeFilt$genes$Symbol), ]
+row.names(dgeFilt) <-  dgeFilt$genes$Symbol
+
+dgeFiltNorm <- calcNormFactors(dgeFilt)
+
+logCPM <- edgeR::cpm(dgeFiltNorm$counts, log = T)
+
+logCPM_noBatch <- removeBatchEffect(logCPM,
+  batch = dgeFiltNorm$samples$Run)
+
+```
+
+## QC
+Generate PCA and RLE plots of the data.
+
+### PCA plots 
+Suppl Figure 17
+```{r, fig.height = 8.5, fig.width = 8.5}
+s <-
+  svd(apply(logCPM_noBatch , 1, function(x)
+    scale(x, scale = FALSE , center = TRUE)))  
+
+anns <- dge$samples
+colnames(anns)[colnames(anns) == "SampleID"] <- "SampleIDs"
+anns$SampleID <- colnames(logCPM_noBatch)
+
+
+# pdf(paste0(figPath, "QC_PCA_OrgFF.pdf"),
+#   height = 8.5,
+#   width = 8.5)
+PCA_plot (
+  expr = logCPM_noBatch,
+  clin = anns,
+  group_to_test = c("Run", "Treatment", "PatientID", "SampleIDs", "Response", "SynchMetach"),
+  # data = "data",
+  svdResult = s,
+  plot_cex = 1,
+  legend_cex = 1.5,
+  labeled = FALSE,
+  group_to_shape = NULL,
+  cols =
+    c(brewer.pal(8, "Dark2")[-5],
+      brewer.pal(10, "Paired"),
+      brewer.pal(12, "Set3"))
+  ) 
+
+# dev.off()
+
+
+# colfunc <-
+#       colorRampPalette(c(
+#         brewer.pal(11, 'BrBG')[-c(1, 6, 11)],
+#         brewer.pal(11, 'PRGn')[-c(1, 6, 11)],
+#         brewer.pal(11, 'RdYlBu')
+#       ))
+#  
+# 
+# patientCol  <- colfunc(length(unique(ann7$PatientID)))
+# names(patientCol) <-
+#   unique(as.character(ann7$PatientID))[order(unique(as.character(ann7$PatientID)))]
+
+```
+
+
+### RLE plot
+Suppl Figure 16
+```{r, fig.height = 4, fig.width = 10}
+exprData = logCPM_noBatch
+# annot = anns[, "Run", drop = F]
+# annot = anns[, "PatientID", drop = F]
+annot = anns[, c("Run", "PatientID", "Treatment", "Treatment_Response"), drop = F]
+
+largeData = T
+textSize = 1.5
+ylim = c(-1, 1)
+
+# pdf(paste0(figPath, "QC_RLE_OrgFF.pdf"),
+#   height = 4,
+#   width = 10)
+
+for(i in colnames(annot)) {
+  a <- annot[, i, drop = F]
+  mainTitle = paste0("RLE plot coloured by ", i)
+  
+  # cols = brewer.pal(9, "Dark2")
+  colnames(a) <- "Annotation"
+  
+  a$Annotation <- factor(a$Annotation,
+    levels = unique(a$Annotation),
+    ordered = TRUE)
+  
+  rle <- exprData - rowMedians(exprData)
+  rleLong <- reshape2::melt(rle)
+  
+  
+  a$Var2 <- row.names(a)
+  rleLong <- merge(data.table::data.table(rleLong),
+    data.table::data.table(a),
+    by = "Var2")
+  
+  
+  
+  rleLong <- rleLong[order(rleLong$Annotation),]
+  rleLong$Var2 <-
+    factor(rleLong$Var2, levels = unique(rleLong$Var2))
+  
+  
+  p <- ggplot(rleLong, aes(x = Var2,
+    y = value,
+    fill = Annotation)) +
+    geom_boxplot(outlier.shape = NA,
+      alpha = 0.8,
+      size = 0.1) +
+    theme_classic() +
+    scale_fill_manual(values = cols) +
+    scale_y_continuous(name = "RLE",
+      limits = ylim) +
+    scale_x_discrete(name = paste0("Samples (n = ", ncol(exprData), ")")) +
+    geom_hline(yintercept = 0,
+      col = "darkred",
+      lwd = 1) +
+    ggtitle(mainTitle) +
+    theme(
+      # axis.title.x = textSize,
+      # axis.title = element_text(size = rel(textSize)),
+      
+      axis.ticks.x = element_blank(),
+      axis.text.x = element_blank(),
+      
+      axis.text.y = element_text(angle = 0, size = rel(textSize)),
+      
+      strip.background = element_rect(colour = "#f0f0f0", fill = "#f0f0f0"),
+      strip.text = element_text(size = rel(textSize)),
+      
+      axis.line = element_line(colour = "black", size = 1.5),
+      # axis.ticks = element_line(),
+      legend.position = "right",
+      legend.direction = "vertical",
+      
+      legend.margin = margin(unit(0, "cm")),
+      legend.title = element_text(size = rel(textSize * 0.8), face = "italic"),
+      legend.text = element_text(size = rel(textSize * 0.8)),
+      plot.title = element_text(
+        face = "bold",
+        size = rel(textSize),
+        hjust = 0.5
+      )
+    )
+  
+  print(p)
+  
+}
+# dev.off()
+
+
+```
+
+
+# DE analysis using limma
+
+## Design matrix
+Here, as we have two different sequencing runs, we include biological group and Run (as batch) in the design matrix, and then use duplicateCorrelation to calculate the within sample correlation, as we have several samples from the same patient (or more precisely, from the same sample).
+
+We note that different samples and runs are also confounded; i.e. all samples from the same organoids have been run on the same Run. However, we do have 6 technical replicates across runs which does not seem to be separated based on different runs, but instead they are clustered based on sample groups. However, some of the sensitive and resistant samples are clustered together, and when we take into account the Run effect in the model, samples are better separated in terms of their sensitivity.\n
+
+We specify all the possible comparisons in the contrast matrix.
+
+```{r Design matrix, cache = T}
+  
+design <- model.matrix(~ 0 + 
+    dge$samples$Treatment_Response + 
+    dge$samples$Run)
+
+colnames(design) <- c(
+  "Ctrl_Res",
+  "Ctrl_SemiSen",
+  "Ctrl_Sen",
+  "FF_Res",
+  "FF_SemiSen",
+  "FF_Sen",
+  "Run2")
+
+# head(design)
+
+
+yl <- estimateDisp(dgeFiltNorm, design, robust = TRUE)
+sqrt(yl$common.dispersion)
+
+
+v <- voom(yl, design, plot = TRUE)
+
+dupcor <- duplicateCorrelation(v, 
+  design, 
+  block = dge$samples$SampleID)      ## 0.59 
+# dupcorP <- duplicateCorrelation(v, design, block = dge$samples$Patients)  ## 0.55
+
+dupcor$consensus.correlation
+
+v <- voom(yl, 
+  design, 
+  block = dge$samples$SampleID, 
+  correlation = dupcor$consensus.correlation, 
+  plot = TRUE)
+
+vfit <- lmFit(v, design, block = dge$samples$SampleID, 
+  correlation = dupcor$consensus.correlation)
+
+
+##-------- Contrast fit and eBayse for comparisons with smaller DEGs
+
+##--- define contrast matrix for those comparisons with smaller DEGs
+contr.matrix1 <- makeContrasts(
+  ## Comparison within control samples
+  Ctrl_Res_Sen     = Ctrl_Res - Ctrl_Sen,
+  Ctrl_Res_SemiSen = Ctrl_Res - Ctrl_SemiSen,
+  Ctrl_Sen_SemiSen = Ctrl_Sen - Ctrl_SemiSen,
+  ## Comparison within treated samples
+  FF_Res_Sen      = FF_Res - FF_Sen,
+  FF_Res_SemiSen  = FF_Res - FF_SemiSen,
+  FF_Sen_SemiSen  = FF_Sen - FF_SemiSen,
+  ## Comparison between Res and (semisen + sen) OR (Res + semisen) and Sen
+  Ctrl_Res_SenSemiSen = Ctrl_Res - ((Ctrl_Sen + Ctrl_SemiSen) / 2),
+  Ctrl_ResSemiSen_Sen = ((Ctrl_Res + Ctrl_SemiSen) / 2) - Ctrl_Sen,
+  FF_ResSemiSen_Sen  = ((FF_Res + FF_SemiSen) / 2) - FF_Sen,
+  FF_Res_SenSemiSen  = FF_Res - (( FF_Sen + FF_SemiSen) / 2) ,
+  
+  ## DE with larger DEGs -- this was previousely a part of below code 
+  Res_FF_Ctrl        = FF_Res - Ctrl_Res,
+  Sen_FF_Ctrl        = FF_Sen - Ctrl_Sen,
+  SemiSen_FF_Ctrl    = FF_SemiSen - Ctrl_SemiSen,
+  ResSemiSen_FF_Ctrl = (FF_Res + FF_SemiSen)/2 - (Ctrl_Res + Ctrl_SemiSen)/2, 
+  SenSemiSen_FF_Ctrl = (FF_Sen + FF_SemiSen)/2 - (Ctrl_Sen + Ctrl_SemiSen)/2, 
+  ## Comparison across treatments and response
+  treatment_Res_Sen = (FF_Res - Ctrl_Res) - (FF_Sen - Ctrl_Sen),
+  levels = colnames(design)
+)
+
+contr.matrix1
+
+vfit1 <- contrasts.fit(vfit, contrasts = contr.matrix1)
+efit1 <- eBayes(vfit1)
+## Plot residual standard deviation versus average log expression for a fitted model
+plotSA(efit1)
+
+summary(decideTests(efit1))
+
+dt1 <- decideTests(efit1)
+
+topl_Ctrl_Res_Sens    <- topTable(efit1, coef = 1, n = Inf)
+topl_Ctrl_Res_SemiSen <- topTable(efit1, coef = 2, n = Inf)
+topl_Ctrl_Sen_SemiSen <- topTable(efit1, coef = 3, n = Inf)
+
+topl_FF_Res_Sens    <- topTable(efit1, coef = 4, n = Inf)
+topl_FF_Res_SemiSen <- topTable(efit1, coef = 5, n = Inf)
+topl_FF_Sen_SemiSen <- topTable(efit1, coef = 6, n = Inf)
+
+topl_Ctrl_Res_SenSemiSen <- topTable(efit1, coef = 7, n = Inf)
+topl_Ctrl_ResSemiSen_Sen <- topTable(efit1, coef = 8, n = Inf)
+topl_FF_ResSemiSen_Sen <- topTable(efit1, coef = 9, n = Inf)
+topl_FF_Res_SenSemiSen <- topTable(efit1, coef = 10, n = Inf)
+
+
+## this was previousely a part of treat (see below commented code)
+
+topl_Res_FF_Ctrl     <- topTable(efit1, coef = 11, n = Inf)
+topl_Sen_FF_Ctrl     <- topTable(efit1, coef = 12, n = Inf)
+topl_SemiSen_FF_Ctrl <- topTable(efit1, coef = 13, n = Inf)
+topl_ResSemiSen_FF_Ctrl <- topTable(efit1, coef = 14, n = Inf)
+topl_SenSemiSen_FF_Ctrl <- topTable(efit1, coef = 15, n = Inf)
+ 
+topl_Treatment_Res_Sen <- topTable(efit1, coef = 16, n = Inf)
+
+```
+
+
+
+save the output of DE analysis
+```{r}
+DEStatList <- list(
+  topl_Ctrl_Res_Sens = topl_Ctrl_Res_Sens [, -c(2, 3, 4, 5)],
+  topl_Ctrl_Res_SemiSen = topl_Ctrl_Res_SemiSen[, -c(2, 3, 4, 5)],
+  topl_Ctrl_Sen_SemiSen = topl_Ctrl_Sen_SemiSen[, -c(2, 3, 4, 5)],
+  topl_FF_Res_Sens = topl_FF_Res_Sens[, -c(2, 3, 4, 5)],
+  topl_FF_Res_SemiSen = topl_FF_Res_SemiSen[, -c(2, 3, 4, 5)],
+  topl_FF_Sen_SemiSen = topl_FF_Sen_SemiSen[, -c(2, 3, 4, 5)],
+  topl_Ctrl_Res_SenSemiSen = topl_Ctrl_Res_SenSemiSen[, -c(2, 3, 4, 5)],
+  topl_Ctrl_ResSemiSen_Sen = topl_Ctrl_ResSemiSen_Sen[, -c(2, 3, 4, 5)],
+  topl_FF_ResSemiSen_Sen = topl_FF_ResSemiSen_Sen[, -c(2, 3, 4, 5)],
+  topl_FF_Res_SenSemiSen = topl_FF_Res_SenSemiSen[, -c(2, 3, 4, 5)],
+  topl_Res_FF_Ctrl = topl_Res_FF_Ctrl[, -c(2, 3, 4, 5)],
+  topl_Sen_FF_Ctrl = topl_Sen_FF_Ctrl[, -c(2, 3, 4, 5)],
+  topl_SemiSen_FF_Ctrl = topl_SemiSen_FF_Ctrl[, -c(2, 3, 4, 5)],
+  topl_ResSemiSen_FF_Ctrl = topl_ResSemiSen_FF_Ctrl[, -c(2, 3, 4, 5)],
+  topl_SenSemiSen_FF_Ctrl = topl_SenSemiSen_FF_Ctrl[, -c(2, 3, 4, 5)],
+  topl_Treatment_Res_Sen = topl_Treatment_Res_Sen[, -c(2, 3, 4, 5)]
+  )
+
+# saveRDS(DEStatList, file = paste0(outPath, "DE_Stats_List_AllComparisons_OrgFF_2020June.RDS"))
+
+```
+
+## Extract DEGs
+
+Here we see how many DEGs present in each group comparison.
+```{r}
+##--- For comparisons in the Control group
+
+# print("Ctrl_Res_Sens")
+DEGl_Ctrl_Res_Sens <- topTable(efit1, coef = 1, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Ctrl_Res_Sens)
+
+
+# print("Ctrl_Res_SemiSen")
+DEGl_Ctrl_Res_SemiSen <- topTable(efit1, coef = 2, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Ctrl_Res_SemiSen)
+
+# print("Ctrl_Sen_SemiSen")
+DEGl_Ctrl_Sen_SemiSen <- topTable(efit1, coef = 3, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Ctrl_Sen_SemiSen)
+
+##--- For comparisons in the FOLFOX group
+
+# print("FF_Res_Sens")
+DEGl_FF_Res_Sens <- topTable(efit1, coef = 4, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_FF_Res_Sens)
+
+# print("FF_Res_SemiSen")
+DEGl_FF_Res_SemiSen <- topTable(efit1, coef = 5, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_FF_Res_SemiSen)
+
+# print("FF_Sen_SemiSen")
+DEGl_FF_Sen_SemiSen <- topTable(efit1, coef = 6, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_FF_Sen_SemiSen)
+
+##--- Compare Res to semi-sen & sens samples in the control group
+
+# print("Ctrl_Res_SenSemiSen")
+DEGl_Ctrl_Res_SenSemiSen <- topTable(efit1, coef = 7, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Ctrl_Res_SenSemiSen)
+
+# print("Ctrl_ResSemiSen_Sen")
+DEGl_Ctrl_ResSemiSen_Sen <- topTable(efit1, coef = 8, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Ctrl_ResSemiSen_Sen)
+
+# print("FF_ResSemiSen_Sen")
+DEGl_FF_ResSemiSen_Sen <- topTable(efit1, coef = 9, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_FF_ResSemiSen_Sen)
+
+# print("FF_Res_SenSemiSen")
+DEGl_FF_Res_SenSemiSen <- topTable(efit1, coef = 10, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_FF_Res_SenSemiSen)
+
+##-------------
+##--- For comparisons across the Control and FOLFOX group
+
+# print("Res_FF_Ctrl")
+DEGl_Res_FF_Ctrl <- topTable(efit1, coef = 11, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Res_FF_Ctrl)
+
+# print("Sen_FF_Ctrl")
+DEGl_Sen_FF_Ctrl <- topTable(efit1, coef = 12, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Sen_FF_Ctrl)
+
+# print("SemiSen_FF_Ctrl")
+DEGl_SemiSen_FF_Ctrl <- topTable(efit1, coef = 13, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_SemiSen_FF_Ctrl)
+
+# print("ResSemiSen_FF_Ctrl")
+DEGl_ResSemiSen_FF_Ctrl <- topTable(efit1, coef = 14, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_ResSemiSen_FF_Ctrl)
+
+# print("SenSemiSen_FF_Ctrl")
+DEGl_SenSemiSen_FF_Ctrl <- topTable(efit1, coef = 15, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_SenSemiSen_FF_Ctrl)
+
+##--- Comparison across treatments and response
+# 
+# print("Treatment_Res_Sen")
+DEGl_Treatment_Res_Sen <- topTable(efit1, coef = 16, n = Inf, sort = "p", p = 0.05, lfc = 1)
+# dim(DEGl_Treatment_Res_Sen)
+
+```
+
+
+Concatanate DEGs into one data frame and save it. This reproduces Suppl Table 5a (sheet 1).
+```{r}
+selCol <-
+  c("Comparison",
+    "GeneID",
+    "Symbol",
+    "logFC",
+    "AveExpr",
+    "t",
+    "P.Value",
+    "adj.P.Val")
+
+  
+DEGl_Ctrl_Res_Sens$Comparison    <- "Ctrl_Res_Sens"
+DEGl_Ctrl_Res_SemiSen$Comparison <- "Ctrl_Res_SemiSen"
+DEGl_Ctrl_Sen_SemiSen$Comparison <- "Ctrl_Sen_SemiSen"
+
+DEGl_FF_Res_Sens$Comparison    <- "FF_Res_Sens"
+DEGl_FF_Res_SemiSen$Comparison <- "FF_Res_SemiSen"
+DEGl_FF_Sen_SemiSen$Comparison <- "FF_Sen_SemiSen"
+
+DEGl_Ctrl_Res_SenSemiSen$Comparison <- "Ctrl_Res_SenSemiSen"
+DEGl_Ctrl_ResSemiSen_Sen$Comparison <- "Ctrl_ResSemiSen_Sen"
+DEGl_FF_ResSemiSen_Sen$Comparison <- "FF_ResSemiSen_Sen"
+DEGl_FF_Res_SenSemiSen$Comparison <- "FF_Res_SenSemiSen"
+
+
+DEGl_Res_FF_Ctrl$Comparison     <- "Res_FF_Ctrl"
+DEGl_Sen_FF_Ctrl$Comparison     <- "Sen_FF_Ctrl"
+DEGl_SemiSen_FF_Ctrl$Comparison <- "SemiSen_FF_Ctrl"
+DEGl_ResSemiSen_FF_Ctrl$Comparison <- "ResSemiSen_FF_Ctrl"
+DEGl_SenSemiSen_FF_Ctrl$Comparison <- "SenSemiSen_FF_Ctrl"
+
+DEGl_Treatment_Res_Sen$Comparison <- "Treatment_Res_Sen"
+
+allDEGs <- rbind(
+  DEGl_Ctrl_Res_Sens[, selCol],
+  DEGl_Ctrl_Res_SemiSen[, selCol], 
+  DEGl_Ctrl_Sen_SemiSen[, selCol],
+  DEGl_FF_Res_Sens[, selCol], 
+  DEGl_FF_Res_SemiSen[, selCol], 
+  DEGl_FF_Sen_SemiSen[, selCol], 
+  
+  DEGl_Ctrl_Res_SenSemiSen[, selCol], 
+  DEGl_Ctrl_ResSemiSen_Sen[, selCol], 
+  DEGl_FF_ResSemiSen_Sen[, selCol], 
+  DEGl_FF_Res_SenSemiSen[, selCol], 
+  
+  DEGl_Res_FF_Ctrl[, selCol], 
+  DEGl_Sen_FF_Ctrl[, selCol], 
+  DEGl_SemiSen_FF_Ctrl[, selCol],
+  
+  DEGl_ResSemiSen_FF_Ctrl[, selCol],
+  DEGl_SenSemiSen_FF_Ctrl[, selCol],
+  
+  DEGl_Treatment_Res_Sen[, selCol])
+
+row.names(allDEGs) <- 1:nrow(allDEGs)
+
+# write.table(
+#   allDEGs,
+#   paste0(outPath, "SuppTable_5a_DEGs_AllComparisons_OrgFF.txt"),
+#   sep = "\t",
+#   row.names = F
+# )
+
+# allDEGs <- read.table(paste0(outPath, "DEGs_AllComparisons_OrgFF_2020June.txt"), 
+#   header = T, sep = "\t")
+# 
+# ## add _ for gene names so they won't change in excel
+# allDEGs$Symbol_Fixed <- paste0("_", allDEGs$Symbol)
+# 
+# write.csv(allDEGs, paste0(outPath, "DEGs_AllComparisons_OrgFF_2020June.csv"), row.names = F)
+
+allDEGs_list <- list(
+  DEGl_Ctrl_Res_Sens = DEGl_Ctrl_Res_Sens,
+  DEGl_Ctrl_Res_SemiSen = DEGl_Ctrl_Res_SemiSen,
+  DEGl_Ctrl_Sen_SemiSen = DEGl_Ctrl_Sen_SemiSen,
+  DEGl_FF_Res_Sens = DEGl_FF_Res_Sens,
+  DEGl_FF_Res_SemiSen = DEGl_FF_Res_SemiSen,
+  DEGl_FF_Sen_SemiSen = DEGl_FF_Sen_SemiSen,
+  
+  DEGl_Ctrl_Res_SenSemiSen = DEGl_Ctrl_Res_SenSemiSen,
+  DEGl_Ctrl_ResSemiSen_Sen = DEGl_Ctrl_ResSemiSen_Sen,
+  DEGl_FF_ResSemiSen_Sen = DEGl_FF_ResSemiSen_Sen,
+  DEGl_FF_Res_SenSemiSen = DEGl_FF_Res_SenSemiSen,
+  
+  DEGl_Res_FF_Ctrl = DEGl_Res_FF_Ctrl,
+  DEGl_Sen_FF_Ctrl = DEGl_Sen_FF_Ctrl,
+  DEGl_SemiSen_FF_Ctrl = DEGl_SemiSen_FF_Ctrl,
+  DEGl_ResSemiSen_FF_Ctrl = DEGl_ResSemiSen_FF_Ctrl, 
+  DEGl_SenSemiSen_FF_Ctrl = DEGl_SenSemiSen_FF_Ctrl,
+  DEGl_Treatment_Res_Sen = DEGl_Treatment_Res_Sen
+)
+
+# saveRDS(allDEGs_list, file = paste0(outPath, "DEGs_AllComparisons_OrgFF_2020June.RDS"))
+
+# allDEGs_list <- readRDS(paste0(outPath, "DEGs_AllComparisons_OrgFF_2020June.RDS"))
+```
+
+
+# Compare DEGs
+## Compare DEGs obtained here
+```{r}
+
+allDEGs2 <- allDEGs
+allDEGs2$Direction[allDEGs2$logFC > 0 ] <- 1
+allDEGs2$Direction[allDEGs2$logFC < 0] <- -1
+
+countDEGs <- matrix(0, ncol = length(unique(allDEGs2$Comparison)), nrow = length(unique(allDEGs2$Symbol)))
+colnames(countDEGs) <- unique(allDEGs2$Comparison)
+rownames(countDEGs) <- unique(allDEGs2$Symbol)
+
+
+##------- three categories -1, 0, 1
+
+countDEGs3 <- sapply(colnames(countDEGs), function(x){
+  currentColName <- x
+  currentCol <- countDEGs[, currentColName, drop = F]
+  
+  currentComparison <- allDEGs2[allDEGs2$Comparison == currentColName, ]
+  
+  currentComparPos <- currentComparison$Symbol[currentComparison$Direction > 0]
+  currentComparNeg <- currentComparison$Symbol[currentComparison$Direction < 0]
+  
+  indxPos <- rownames(currentCol) %in% currentComparPos
+  indxNeg <- rownames(currentCol) %in% currentComparNeg
+  
+  currentCol[indxPos] <- 1
+  currentCol[indxNeg] <- -1
+  currentCol
+})
+rownames(countDEGs3) <- rownames(countDEGs)
+
+colnames(countDEGs3) <- sapply(colnames(countDEGs3), function(x) {
+  paste0(x , " (n = ", table(allDEGs2$Comparison)[x], ")")
+})
+
+```
+
+### Heatmap of DEGs from different comparisons
+Here we compare the overlapping genes across some of the comparisons. This reproduces Suppl Figure 7a.
+```{r, fig.height=6,fig.width=10}
+DEGs_hm <- ComplexHeatmap::Heatmap(
+  t(countDEGs3),
+  # col = brewer.pal(9, "Set1")[c(2, 9, 4)],
+  col = viridis::viridis(begin = 0.05, end = 0.95, n = 3),
+  name = "DEG direction",
+  column_title = "DEGs from different group comparisons", 
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = T,
+  show_column_names = F, 
+  row_names_gp = gpar(fontsize = 12), 
+  clustering_distance_rows = "manhattan",
+  clustering_method_rows = "ward.D2",
+  clustering_distance_columns = "manhattan",
+  clustering_method_columns = "ward.D2"
+) 
+
+# pdf(
+#   paste0(
+#     figPath,
+#     "Suppl_Figure_7a_Heatmap_DEGs_allComparisons_OrgFF.pdf"
+#   ),
+#   height = 6,
+#   width = 10
+# )
+ComplexHeatmap::draw(DEGs_hm, heatmap_legend_side = "left")
+# dev.off()
+```
+
+
+
+
+
+# Down-stream analysis
+
+```{r}
+# dataType <- "logCPM"
+# dd <- logCPM
+
+# dataType <- "limmaCorrected"
+# dd <- logCPM_noBatch
+
+cc <- unique(allDEGs$Comparison)
+```
+
+## Heatmap of DEGs
+```{r heatmap Ctrl_Res_Sens, fig.height = 8, fig.width = 8.5}
+# 
+# currentDEGs <- allDEGs_list$DEGl_Treatment_Res_Sen
+# currentDEGs <- currentDEGs[order(currentDEGs$logFC),]
+# 
+# png(
+#   paste0(
+#     figPath,
+#     "Heatmap_DEGs_Treatment_Res_Sens_ResSensOrgFF_limmaCorrected_2020June_ord.png"
+#   ),
+#   height = 8,
+#   width = 6,
+#   unit = "in",
+#   res = 400
+# )
+# plotHeatmapExpr(
+#   genes = currentDEGs$Symbol,
+#   exprData = logCPM_noBatch,
+#   dataType = "limma-corrected",
+#   orgTum = "Org",
+#   treatmentOrg = c("FOLFOX", "Control"),
+#   responseOrg = c("Resistant", "Sensitive"),
+#   treatmentTum = NULL,
+#   responseTum = NULL,
+#   annotData = dgeFiltNorm$samples,
+#   annotColumns = c("PatientID", "Treatment", "Response"),
+#   clustRows = T,
+#   clustCols = F,
+#   showRowNames = F,
+#   showColNames = F,
+#   textSize = 14,
+#   plotTitle = "Heatmap of DEGs between resistant and sensitive PDTO \nin the FOLFOX treated group vs control group"
+# )
+# dev.off()
+
+```
+
+## Volcano plot of DEGs
+Focusing on Treatment_Res_Sen DEGs, we generate a volcano plot. This reproduces Figure 3a.
+```{r}
+currentDEStat <- DEStatList$topl_Treatment_Res_Sen
+
+currentDEStat$Threshold <- abs(currentDEStat$logFC) > 1 & currentDEStat$adj.P.Val < 0.05
+
+currentDEStat$genelabels <- ""
+
+getGenes <-
+  c(
+    "CHEK1",
+    "CHEK2",
+    "AURKA",
+    "AURKB",
+    "E2F8",
+    "E2F1",
+    "E2F2",
+    "CDK2",
+    "CDK1",
+    "KIF4A",
+    "KIF23",
+    "KIF2C",
+    "KIFC1",
+    "CDCA8",
+    "CDC45",
+    "CDC20",
+    "CDC25C", "SKA2", "TOP2A"
+  )
+
+currentDEStat$genelabels <- ifelse(
+  currentDEStat$Symbol %in% getGenes
+  ,
+  TRUE,
+  FALSE
+)
+
+currentDEStat$logPval <- -log10(currentDEStat$adj.P.Val)
+
+ggplot(currentDEStat, aes(
+    x = logFC,
+    y = logPval,
+    colour = Threshold
+  )) + 
+  geom_point(alpha = 0.5) +
+  geom_label_repel(data         = subset(currentDEStat, genelabels),
+    aes(label = rownames(subset(currentDEStat, genelabels))),
+                  size          = 6,
+                  box.padding   = 0.3,
+                  point.padding = 0.3,
+                  force         = 1, 
+                  segment.size  = 0.8,
+                  segment.color = "black"
+                  # direction     = "x"
+    ) +
+  scale_color_manual(values = c("gray50", "purple4")) +
+  ggtitle("") +
+  xlab("log2 fold change") +
+  ylab("-log10 adjusted p-value") +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = rel(2), hjust = 0.5),
+    axis.title = element_text(size = rel(2.5)),
+    axis.text = element_text(size = rel(2.5)),
+  ) 
+
+# ggsave(
+#   filename =  "Figure_3a_VolcanoPlot_Treatment_Res_Sen.pdf",
+#   device = "pdf",
+#   dpi = 400,
+#   width = 8.5,
+#   height = 8,
+#   path = figPath
+# )
+
+```
+
+
+
+## KEGG Pathway and GO analysis using DEGs
+We export the results of KEGG and GO for each of the DEGs (if you change cc parameter below), specifically for the DEGs from Treatment_Res_Sen (Supplemntary Tables 6a and 6b [first two sheets])  
+```{r, cache = TRUE}
+# cc <- as.character(unique(allDEGs$Comparison)) For all DEGs
+cc <- "Treatment_Res_Sen"
+
+for(i in cc) {
+  currentDEGs <- allDEGs[allDEGs$Comparison == i, ]
+  currentDEGs <- currentDEGs[order(currentDEGs$logFC), ]
+  
+  ##----- KEGG and GO analysis
+  IDs_DEGs <- currentDEGs$GeneID
+  universeGenes <- dgeFiltNorm$genes$GeneID
+  
+  kg <- kegga(de = IDs_DEGs,
+    species = "Hs",
+    universe = universeGenes)
+  
+  write.table(
+    topKEGG(kg, number = Inf),
+    paste0(outPath, "KEGG_", i, ".txt"),
+    row.names = T,
+    sep = "\t"
+  )
+  
+  go <- goana(de = IDs_DEGs,
+    species = "Hs",
+    universe = universeGenes)
+  
+  write.table(
+    topGO(go, ontology = "BP", number = Inf),
+    paste0(outPath, "GO_", i, ".txt"),
+    row.names = T,
+    sep = "\t"
+  )
+}
+```
+
+### Visualise significant KEGG in selected DEGs
+Reproduce Figure 3b
+```{r}
+# kk <- read.table(paste0(outPath, "KEGG_Treatment_Res_Sen.txt"), header = T, sep = "\t")
+kk <- kg
+textSize <- 2
+
+# kk <- hData[hData$.id == "Treatment_Res_Sen", ]
+kk$Gene_proportion <- kk$DE/kk$N
+kk$log.P.value <- -log10(kk$P.DE)
+
+kk2 <- kk %>% arrange(P.DE) %>% 
+  head(20) %>% data.frame()
+
+
+ggplot(kk2, aes(
+  x = reorder(Pathway, log.P.value),
+  y = Gene_proportion,
+  fill =  log.P.value
+)) +
+  geom_bar(stat = "identity") +
+  scale_fill_continuous(# midpoint = median(kk$log.P.value),
+    high =  brewer.pal(8, "Set2")[1] ,
+    # mid =  brewer.pal(8, "Pastel2")[1] ,
+    low = brewer.pal(9, "Purples")[8]) +
+  coord_flip() +
+  labs(fill = "-log10(p-value)") +
+  theme_minimal() +
+  theme(
+    # panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.x = element_text(size = rel(textSize)),
+    axis.text.y = element_text(size = rel(textSize)),
+    axis.title.x = element_text(size = rel(textSize)),
+    legend.title = element_text(size = rel(textSize), face = "italic"),
+    legend.text = element_text(size = rel(textSize)),
+    legend.position = "top",
+    legend.key.width = unit(1.2,"cm") 
+    # legend.title.align  = 0.5
+  ) 
+
+# ggsave(
+#   filename = "Figure_3b_KEGG_top20_Treatment_Res_Sen.png",
+#   device = "png",
+#   path = figPath,
+#   width = 10,
+#   height = 6, 
+#   dpi = 600
+# )
+```
+
+## Camera using MSigDB
+MSigDB set-up for camera test, and downloading the KEGG pathways and store them to use later.
+
+```{r}
+msigdf.human %>% head()
+h <- msigdf.human %>%
+  dplyr::filter(category_code == "hallmark") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         ##  it turns a two-column data frame into a named vector.
+
+
+
+c1 <- msigdf.human %>%
+  dplyr::filter(category_code == "c1") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         
+
+
+c2 <- msigdf.human %>%
+  dplyr::filter(category_code == "c2") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         
+
+
+c3 <- msigdf.human %>%
+  dplyr::filter(category_code == "c3") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()        
+
+
+c4 <- msigdf.human %>%
+  dplyr::filter(category_code == "c4") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         
+
+
+c6 <- msigdf.human %>%
+  dplyr::filter(category_code == "c6") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()        
+
+
+c7 <- msigdf.human %>%
+  dplyr::filter(category_code == "c7") %>%
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe()         
+
+
+KgGenePtwy <- getGeneKEGGLinks(species.KEGG = "hsa")
+```
+
+- **H**, hallmark gene sets are coherently expressed signatures derived by aggregating many MSigDB gene sets to represent well-defined biological states or processes.
+
+- **C1**, positional gene sets for each human chromosome and cytogenetic band.
+- **C2**, curated gene sets from online pathway databases, publications in PubMed, and knowledge of domain experts.
+- **C3**, motif gene sets based on conserved cis-regulatory motifs from a comparative analysis of the human, mouse, rat, and dog genomes.
+- **C4** (858 signatures), computational gene sets defined by mining large collections of cancer-oriented microarray data.
+- **C5** (6166 terms), GO gene sets consist of genes annotated by the same GO terms.
+- **C6**, oncogenic signatures defined directly from microarray gene expression data from cancer gene perturbations.
+- **C7**, Immunologic signatures collection (also called ImmuneSigDB) is composed of gene sets that represent cell types, states, and perturbations within the immune system.
+
+We use the more recent version of MSigDB (v6.2 - July 2018) in a data frame format using MSigDF package (accessed on the 3rd of April 2019).
+Here, I only run the command for hallmark gene sets and export the results of the test for different group comparisons; you could uncomment sections of the code below to include the test for different categories.
+
+```{r, cache = T}
+cc <- as.character(unique(allDEGs$Comparison))
+cc <- gsub("Ctrl_Res_Sens", "Ctrl_Res_Sen", cc)
+cc <- gsub("FF_Res_Sens", "FF_Res_Sen", cc)
+cc <- gsub("Treatment_Res_Sen", "treatment_Res_Sen", cc)
+
+allDEGs$Comparison[allDEGs$Comparison == "Ctrl_Res_Sens"] <- "Ctrl_Res_Sen"
+allDEGs$Comparison[allDEGs$Comparison == "FF_Res_Sens"] <- "FF_Res_Sen"
+allDEGs$Comparison[allDEGs$Comparison == "Treatment_Res_Sen"] <- "treatment_Res_Sen"
+
+
+for(i in cc) {
+  currentDEGs <-
+    allDEGs[allDEGs$Comparison == i, ]
+
+    ##----- set subsamples
+  currentDEGs <- allDEGs[allDEGs$Comparison == i,]
+  # if(i  %in% colnames(contr.matrix1)){
+    currentContrast <- contr.matrix1[, i]
+  # }
+  # if(i  %in% colnames(contr.matrix2)){
+  #   currentContrast <- contr.matrix2[, i]
+  # }
+  
+  ##----- Hallmark
+  idx.h <- ids2indices(h, id = yl$genes$Symbol)
+  cam.h <-
+    camera(yl,
+      idx.h,
+      design,
+      contrast = currentContrast,
+      inter.gene.cor = 0.01)
+  
+  write.table(
+    cam.h,
+    paste0(outPath, "CAMERA_MSigDB.v6.2_Hallmarks_", i, ".txt") ,
+    row.names = T,
+    sep = "\t"
+  )
+  
+  # ##-------- C2
+  # idx.c2 <- ids2indices(c2, id = yl$genes$Symbol)
+  # cam.c2 <-
+  #   camera(yl,
+  #     idx.c2,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c2,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C2_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C3
+  # idx.c3 <- ids2indices(c3, id = yl$genes$Symbol)
+  # cam.c3 <-
+  #   camera(yl,
+  #     idx.c3,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c3,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C3_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C4
+  # idx.c4 <- ids2indices(c4, id = yl$genes$Symbol)
+  # cam.c4 <-
+  #   camera(yl,
+  #     idx.c4,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c4,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C4_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C6
+  # idx.c6 <- ids2indices(c6, id = yl$genes$Symbol)
+  # cam.c6 <-
+  #   camera(yl,
+  #     idx.c6,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c6,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C6_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+  # 
+  # ##------- C7
+  # idx.c7 <- ids2indices(c7, id = yl$genes$Symbol)
+  # cam.c7 <-
+  #   camera(yl,
+  #     idx.c7,
+  #     design,
+  #     contrast = currentContrast,
+  #     inter.gene.cor = 0.01)
+  # 
+  # write.table(
+  #   cam.c7,
+  #   paste0(outPath, "CAMERA_MSigDB.v6.2_C7_", i, ".txt") ,
+  #   row.names = T,
+  #   sep = "\t"
+  # )
+}
+
+```
+
+
+
+### Heatmap of significant Hallmark signatures across comparisons
+Read the results and generate heatmap; this reproduces Suppl Figure 7b.
+```{r}
+library(plyr)
+
+fileList <- list.files(outPath)
+hh <- fileList[grepl("CAMERA_MSigDB.v6.2_Hallmark", fileList)]
+hPath <- paste0(outPath, hh)
+
+hList <- lapply(hPath, read.table, header = T, sep = "\t")
+
+names(hList) <- gsub("CAMERA_MSigDB.v6.2_Hallmarks_", "", hh)
+names(hList) <- gsub(".txt", "", names(hList) )
+
+hListSignif <- llply(hList, function(x){
+  x <- x[x$FDR < 0.05, ]
+  x$GeneSet <- rownames(x)
+  return(x)
+})
+
+hData <- ldply(hListSignif)
+
+
+hData$Directions[hData$Direction == "Up"] <- 1
+hData$Directions[hData$Direction == "Down"] <- -1
+
+# write.table(
+#   hData,
+#   paste0(outPath, "HallMark_Significant_OrgFF_2020July.txt"),
+#   row.names = F,
+#   sep = "\t"
+# )
+
+
+countTerms <- matrix(0, ncol = length(unique(hData$.id)), nrow = length(unique(hData$GeneSet)))
+colnames(countTerms) <- unique(hData$.id)
+rownames(countTerms) <- unique(hData$GeneSet)
+
+##------- three categories -1, 0, 1
+
+countTerm2 <- sapply(colnames(countTerms), function(x){
+  currentColName <- x
+  currentCol <- countTerms[, currentColName, drop = F]
+  
+  currentID <- hData[hData$.id == currentColName, ]
+  
+  currentTermUp <- currentID$GeneSet[currentID$Directions > 0]
+  currentTermDn <- currentID$GeneSet[currentID$Directions < 0]
+  
+  indxUp <- rownames(currentCol) %in% currentTermUp
+  indxDn <- rownames(currentCol) %in% currentTermDn
+  
+  currentCol[indxUp] <- 1
+  currentCol[indxDn] <- -1
+  currentCol
+})
+rownames(countTerm2) <- rownames(countTerms)
+
+colnames(countTerm2) <- sapply(colnames(countTerm2), function(x) {
+  paste0(x , " (n = ", table(hData$.id)[x], ")")
+})
+
+
+rownames(countTerm2) <- gsub("HALLMARK_", "", rownames(countTerm2))
+
+```
+
+```{r, fig.height = 8, fig.width = 8}
+hallmark_hm <- ComplexHeatmap::Heatmap(
+  countTerm2,
+  col = brewer.pal(9, "Set1")[c(2, 9, 4)],
+  # col = viridis::viridis(3),
+  name = "Direction",
+  column_title = "Significant hallmark gene-sets",
+  cluster_rows = T,
+  cluster_columns = T,
+  show_row_names = T,
+  show_column_names = T, 
+  row_names_gp = gpar(fontsize = 8), 
+  clustering_distance_rows = "manhattan",
+  clustering_method_rows = "ward.D2",
+  clustering_distance_columns = "manhattan",
+  clustering_method_columns = "ward.D2"
+) 
+# pdf(
+#   paste0(
+#     figPath,
+#     "Suppl_Figure_7b_Heatmap_Hallmarks_Org_AllComparisons.pdf"
+#   ),
+#   height = 8,
+#   width = 8
+# )
+ComplexHeatmap::draw(hallmark_hm, heatmap_legend_side = "left")
+# dev.off()
+```
+
+
+## Singscore
+Run singscore on different signatures; to be able to do this, we need to have RPKM data which is adjusted for gene length. We would like also to keep the genes present in different signatures, while filtering for low expressed genes.
+
+### Read signatures
+#### Read processed Tum signature
+```{r}
+sigTum <- readRDS(paste0(sigPath, "TumSigs_DDR_TP53.RDS"))
+```
+
+#### E2F and Spindle from Hallmark
+There are **200 genes** from Hallmark as targets of E2F, **37 of which is overlapping with cell cycle** genes. Hallmarke gene sets are considered to be up-regulated... Add these to DDr and TP53- signatures.
+```{r}
+E2F_h <- h$HALLMARK_E2F_TARGETS
+
+E2F_h2 <- alias2SymbolUsingNCBI(E2F_h,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+E2F_h <- E2F_h2$GeneID
+names(E2F_h) <- E2F_h2$Symbol
+E2F_h <- E2F_h[complete.cases(E2F_h)]
+
+
+Spindle_h <- h$HALLMARK_MITOTIC_SPINDLE
+
+Spindle_h2 <- alias2SymbolUsingNCBI(Spindle_h,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+Spindle_h <- Spindle_h2$GeneID
+names(Spindle_h) <- Spindle_h2$Symbol
+Spindle_h <- Spindle_h[complete.cases(Spindle_h)]
+
+
+selSigs0 <- c(
+  sigTum[c("TP53_negative", "DDR_All")],
+  list(E2F_Hallmark = E2F_h),
+  list(Spindle_Hallmark = Spindle_h)
+)
+
+# currentGenes <- unique(unlist(selSigs0))
+names(selSigs0) <-
+  c(
+    "TP53 negative",
+    "DNA damage repair",
+    "E2F (hallmark)",
+    "Spindle (hallmark)"
+  )
+```
+
+
+#### Cell cycle genes from WHITFIELD
+We also add signatures from different cell cycle steps.
+```{r}
+
+wh <-  unique(grep("WHITFIELD_CELL_CYCLE", msigdf.human$geneset, value = T))[-1]
+selCellCycleSigs <- msigdf.human %>% 
+  dplyr::filter(geneset   %in% wh) %>% 
+  dplyr::select(geneset, symbol) %>%
+  dplyr::group_by(geneset) %>%
+  dplyr::summarize(entrez = list(symbol)) %>%
+  deframe() 
+  
+names(selCellCycleSigs) <- gsub("WHITFIELD_CELL_CYCLE_", "", names(selCellCycleSigs))
+
+selCellCycleSigs <-
+  lapply(selCellCycleSigs,
+    alias2SymbolUsingNCBI,
+    paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+
+selCellCycleSigs <- sapply(names(selCellCycleSigs), function(x){
+  currentSig <- selCellCycleSigs[[x]]
+  genename <- currentSig$Symbol
+  currentSig <- currentSig$GeneID
+  names(currentSig) <- genename
+  return(currentSig)
+})
+
+```
+
+
+#### Apoptosis Signature
+```{r}
+ap <- h$HALLMARK_APOPTOSIS
+ap2 <- alias2SymbolUsingNCBI(ap,
+  paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+ap <- ap2$GeneID
+names(ap) <- ap2$Symbol
+ap <- ap[complete.cases(ap)]
+
+ap_Symbol <- names(ap)
+
+apList <- list("Apoptosis (hallmark)" = ap)
+```
+
+
+```{r}
+selSig <- c(selSigs0, selCellCycleSigs, apList)
+selSig <- lapply(selSig, function(x) {
+  x <- x[!duplicated(x)]
+  return(x)
+})
+# currentGenes <- unique(unlist(selSig))
+currentGenes <- unique(unlist(selSig))
+```
+
+
+### Filter and normalise data for scoring
+Here, we go back to dge and filter the data again, such that we retain the genes in the signature while filtering for low expressed genes.
+```{r}
+# design0 <- model.matrix(~ 0 + 
+#     dge$samples$Treatment_Response_group)
+# kp2 <- filterByExpr(dge, design = design0) | dge$genes$GeneID %in% currentGenes
+
+kp2 <- rowSums(cpm(dge$counts > 5)) >= 0.5*ncol(dge) | dge$genes$GeneID %in% c(currentGenes, ap)
+summary(kp2)
+
+dgeFilt2 <- dge[kp2, ]
+dgeFilt2 <- dgeFilt2[complete.cases(dgeFilt2$genes$GeneID), ]
+row.names(dgeFilt2) <-  dgeFilt2$genes$GeneID
+
+dgeFiltNorm2 <- calcNormFactors(dgeFilt2)
+logRPKM <- rpkm(dgeFiltNorm2, log = T)
+
+```
+
+
+
+### Scores for selected signatures
+```{r, warning=F}
+# library(singscore)
+dranked <- rankGenes(logRPKM)
+```
+
+Reproduce Figure 3d.
+```{r}
+
+selScores_uniDir <- plyr::llply(selSig, function(s){
+  sc <- simpleScore(rankData = dranked, 
+    upSet = s, 
+    centerScore = T, 
+    knownDirection = T)
+  return(sc)
+}) 
+
+
+library(plyr)
+selScores_all_annot <- plyr::ldply(selScores_uniDir, function(x){
+  x$Treatment_Response <- dge$samples$Treatment_Response
+  return(x)
+})
+```
+
+
+```{r, fig.width = 17, fig.height = 10}
+
+numCol <- 5
+currentTitle <- "Signature scores for vehicle- and FOLFOX-treated PDTOs\nstratified by treatment outcome"
+  
+selScores_all_annot$.id <-
+  factor(
+    selScores_all_annot$.id,
+    levels = c(
+      "DNA damage repair",
+      "E2F (hallmark)",
+      "Spindle (hallmark)",
+      "TP53 negative",
+      "Apoptosis (hallmark)",
+      "G1_S",
+      "S",
+      "G2",
+      "G2_M",
+      "M_G1"
+    )
+  )
+
+p <-  ggplot(
+  data = selScores_all_annot, 
+  aes(x = Treatment_Response, y = TotalScore,
+  fill = Treatment_Response)
+  ) +
+  geom_boxplot(
+  
+  position = position_dodge(width = 0.7),
+  width = 0.8,
+  alpha = 1,
+  # outlier.shape = NA
+  size = 0.4,
+  outlier.size = 0.2
+  ) +
+  #   ggsignif::geom_signif(
+  #   comparison = list(c("FOLFOX_Resistant", "FOLFOX_Sensitive")),
+  #   map_signif_level = T,
+  #   tip_length = 0,
+  #   vjust = 1.4,
+  #   col = "gray40"
+  # ) +
+  facet_wrap( ~ .id, scale = "free", ncol = numCol) +
+  ylab ("Scores") +
+  xlab("") +
+  ggtitle(currentTitle) +
+  scale_fill_manual(values = c(
+    brewer.pal(9, "Greens")[c(7, 5, 3)],
+    brewer.pal(9, "Purples")[c(7, 5, 3)]),
+  name = "Treatment & Response") +
+  scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+    expand = c(scalingFactor, 0)) +
+  current_theme
+
+p
+
+# ggsave(
+#   filename = "Figure_3d_Boxplot_SigScores_OrgFF.png",
+#   plot = p,
+#   device = "png",
+#   width = 17,
+#   height = 6,
+#   dpi = 600,
+#   path = figPath
+# )
+
+```
+
+
+# Stats from FF_Res_Sens
+We first extracted all the E2F, cell cycle, and spindle related signatures from MSigDB, KEGG and where available, from the literature. Then we used the alias2SymbolUsingNCBI function to map gene names to EntrezIDs. Then we combined all the signatures; here we read the combined list that we had saved as an RDS file, and then extract their stats from DE analysis. 
+
+```{r}
+gg <- readRDS(paste0(dataPath, "E2F_CellCycle_Spindle_Genes.RDS"))
+
+currentGenes <- unique(c(
+  gg$E2F_related,
+  gg$cellCycle_related, 
+  gg$spindle_related
+  )
+)
+
+```
+
+
+## Heatmaps of E2F, cell cycle and Spindle genes
+Focusing on FF_Res_Sen DEGs, 484 of these genes are E2F, cell cycle and spindle genes. Here, we reproduce Supp Figure 7c.
+```{r}
+
+comDEGs <- intersect(allDEGs_list$DEGl_FF_Res_Sens$GeneID, currentGenes)
+length(comDEGs)  ## 484
+
+candDEGs <- allDEGs_list$DEGl_FF_Res_Sens[allDEGs_list$DEGl_FF_Res_Sens$GeneID  %in%  comDEGs, ]
+# saveRDS(candDEGs, paste0(outPath, "DEGs_FF_Res_Sen_E2F_CellCycle_Spindle_Genes.RDS"))
+
+cand <- candDEGs[,-c(2, 3, 4, 5)]
+rownames(cand) <- cand$Symbol
+```
+
+```{r}
+# design0 <- model.matrix(~ 0 + 
+#     dge$samples$Treatment_Response)
+# kp <- filterByExpr(dge, design = design0)
+
+kp3 <- rowSums(cpm(dge$counts > 5)) >= 0.5*ncol(dge) | 
+  as.character(dge$genes$GeneID) %in% as.character(cand$GeneID)
+
+summary(kp3)
+
+dgeFilt <- dge[kp3, ]
+dgeFilt <- dgeFilt[complete.cases(dgeFilt$genes$Symbol), ]
+row.names(dgeFilt) <-  dgeFilt$genes$Symbol
+
+dgeFiltNorm <- calcNormFactors(dgeFilt)
+logCPM <- edgeR::cpm(dgeFiltNorm$counts, log = T)
+
+logCPM_noBatch <- removeBatchEffect(logCPM,
+  batch = dgeFiltNorm$samples$Run)
+
+logRPKM <- edgeR::rpkm(dgeFiltNorm, log = T)
+```
+
+
+```{r, fig.height = 8, fig.width = 6}
+
+currentTitle <-
+  "E2F, cell cycle and spindle  genes differentially expressed\nbetween resistant and sensitive PDTOs\n after FOLFOX treatment (N = 484)" 
+
+# pdf(
+#   paste0(
+#     figPath,
+#     "Supp_Figure_7c_Heatmap_E2F_CellCycle_Spindle_Org_FF_Res_Sen.pdf"
+#   ),
+#   height = 8,
+#   width = 6
+# )
+plotHeatmapExpr(
+  genes = cand$Symbol,
+    exprData = logCPM_noBatch,
+    dataType = "logCPM_noBatch",
+    orgTum = "Org",
+    treatmentOrg = "FOLFOX",
+    responseOrg = c("Sensitive", "Resistant"),
+    treatmentTum = NULL,
+    responseTum = NULL,
+    annotData = dgeFiltNorm$samples,
+    annotColumns = c("PatientID", "Tissue", "Response"), 
+    geneAnnot = NULL,
+    geneCol = NULL,
+    # geneAnnot = geneAnnotations,
+    # geneCol = geneCols,
+    clustRows = T,
+    clustCols = T,
+    showRowNames = F,
+    showColNames = F,
+    textSize = 14,
+    plotTitle = currentTitle
+  )
+
+# dev.off()
+```
+
+# Check expression of genes
+## Check target genes 
+Reproduce Figure 7a
+```{r}
+g <- c("TTK", "WEE1", "CHEK1")
+annotData <- dgeFiltNorm$samples
+exprData <- logCPM_noBatch
+
+ddgene <- exprData[g, rownames(annotData), drop = F]
+
+annotExpr <- data.frame(annotData, t(ddgene))
+
+annotExprLong <- annotExpr %>% 
+  tidyr::pivot_longer(cols = TTK:CHEK1, names_to = "Genes", values_to = "logCPM") %>% 
+  data.frame()
+
+
+numCol <- 3
+
+# pdf(
+#   paste0(
+#     figPath,
+#     "Figure_7a_Boxplot_TTK_WEE1_CHEK1_OrgFF.pdf"
+#   ),
+#   height = 3,
+#   width = 10
+# )
+ggplot(data = annotExprLong) +
+  geom_boxplot(
+  aes(x = Treatment_Response, y = logCPM,
+  fill = Treatment_Response),
+  position = position_dodge(width = 0.7),
+  width = 0.8,
+  alpha = 1,
+  # outlier.shape = NA
+  size = 0.4,
+  outlier.size = 0.2
+  ) +
+  facet_wrap( ~ Genes, scale = "free", ncol = numCol) +
+  ylab ("logCPM") +
+  xlab("") +
+  ggtitle("Expression of target genes in PDTOs") +
+  scale_fill_manual(values = c(
+    brewer.pal(9, "Greens")[c(7, 5, 3)],
+    brewer.pal(9, "Purples")[c(7, 5, 3)]),
+  name = "Treatment & Response") +  
+  scale_y_continuous(breaks = equal_breaks(n = nBreak, s = scalingFactor),
+    expand = c(scalingFactor, 0)) +
+  current_theme
+# dev.off()
+```
+
+
+# Session information
+```{r}
+sessionInfo()
+```
+
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 598px;"></div>
+
+
+
