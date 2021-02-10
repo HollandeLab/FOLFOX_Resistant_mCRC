@@ -134,3 +134,8 @@ RLE_ggplot <- function(exprData = exprData,
   print(p)
 
 }
+
+
+
+
+

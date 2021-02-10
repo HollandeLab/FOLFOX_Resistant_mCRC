@@ -1,0 +1,129 @@
+Gene name (synonyms),Activity,Chromosome location,Accession number,
+UNG,U,12q23-q24.1,NM_003362,BER - DNA glycosylases: major altered base released
+SMUG1,U,12q13.1-q14,NM_014311,BER - DNA glycosylases: major altered base released
+MBD4,U or T opposite G at CpG sequences,3q21-q22,NM_003925,BER - DNA glycosylases: major altered base released
+TDG,"U, T or ethenoC opposite G",12q24.1,NM_003211,BER - DNA glycosylases: major altered base released
+OGG1,8-oxoG opposite C,3p26.2,NM_002542,BER - DNA glycosylases: major altered base released
+MYH,A opposite 8-oxoG,1p34.3-p32.1,NM_012222,BER - DNA glycosylases: major altered base released
+NTH1,Ring-saturated or fragmented pyrimidines,16p13.3-p13.2,NM_002528,BER - DNA glycosylases: major altered base released
+MPG,"3-meA, ethenoA, hypoxanthine",16p13.3,NM_002434,BER - DNA glycosylases: major altered base released
+"APE1 (HAP1, APEX, REF1)",AP endonuclease,14q12,NM_001641,BER - Other factors
+APE2 (APEXL2),AP endonuclease,X,NM_014481,BER - Other factors
+LIG3,Main ligation function,17q11.2-q12,NM_013975,BER - Other factors
+XRCC1,Main ligation function,19q13.2,NM_006297,BER - Other factors
+ADPRT,Protects strand interruptions,1q42,NM_001618,BER - PARP enzymes
+ADPRTL2,PARP-like enzyme,14q11.2-q12,NM_005485,BER - PARP enzymes
+ADPRTL3,PARP-like enzyme,3p21.1-p22.2,AF085734,BER - PARP enzymes
+MGMT,O6-meG alkyltransferase,10q26,NM_002412,Direct reversal of damage
+MSH2,Mismatch and loop recognition,2p22-p21,NM_000251,Mismatch excision repair (MMR)
+MSH3,Mismatch and loop recognition,5q11-q12,NM_002439,Mismatch excision repair (MMR)
+MSH6,Mismatch recognition,2p16,NM_000179,Mismatch excision repair (MMR)
+MSH4,MutS homolog specialized for meiosis,1p31,NM_002440,Mismatch excision repair (MMR)
+MSH5,MutS homolog specialized for meiosis,6p21.3,NM_002441,Mismatch excision repair (MMR)
+PMS1,Mitochondrial MutL homolog,2q31.1,NM_000534,Mismatch excision repair (MMR)
+MLH1,MutL homolog,3p21.3,NM_000249,Mismatch excision repair (MMR)
+PMS2,MutL homolog,7p22,NM_000535,Mismatch excision repair (MMR)
+MLH3,MutL homolog of unknown function,14q24.3,NM_014381,Mismatch excision repair (MMR)
+PMS2L3,MutL homolog of unknown function,7q11-q22,D38437,Mismatch excision repair (MMR)
+PMS2L4,MutL homolog of unknown function,7q11-q22,D38438,Mismatch excision repair (MMR)
+XPC,Binds damaged DNA as complex,3p25,NM_004628,Nucleotide excision repair (NER)
+RAD23B (HR23B),Binds damaged DNA as complex,3p25.1,NM_002874,Nucleotide excision repair (NER)
+CETN2,Binds damaged DNA as complex,Xq28,NM_004344,Nucleotide excision repair (NER)
+RAD23A (HR23A),Substitutes for HR23B,19p13.2,NM_005053,Nucleotide excision repair (NER)
+XPA,Binds damaged DNA in preincision complex,9q22.3,NM_000380,Nucleotide excision repair (NER)
+RPA1,Binds DNA in preincision complex,17p13.3,NM_ 002945,Nucleotide excision repair (NER)
+RPA2,Binds DNA in preincision complex,1p35,NM_002946,Nucleotide excision repair (NER)
+RPA3,Binds DNA in preincision complex,7p22,NM_002947,Nucleotide excision repair (NER)
+TFIIH,Catalyzes unwinding in preincision complex,,,Nucleotide excision repair (NER)
+XPB (ERCC3),3_ to 5_ DNA helicase,2q21,NM_000122,Nucleotide excision repair (NER)
+XPD (ERCC2),5_ to 3_ DNA helicase,19q13.2-q13.3,X52221,Nucleotide excision repair (NER)
+GTF2H1,Core TFIIH subunit p62,11p15.1-p14,NM_005316,Nucleotide excision repair (NER)
+GTF2H2,Core TFIIH subunit p44,5q12.2-q13.3,NM_001515,Nucleotide excision repair (NER)
+GTF2H3,Core TFIIH subunit p34,12q,NM_001516,Nucleotide excision repair (NER)
+GTF2H4,Core TFIIH subunit p52,6p21.3,NM_001517,Nucleotide excision repair (NER)
+CDK7,Kinase subunit of TFIIH,2p15-cen,NM_001799,Nucleotide excision repair (NER)
+CCNH,Kinase subunit of TFIIH,5q13.3-q14,NM_001239,Nucleotide excision repair (NER)
+MNAT1,Kinase subunit of TFIIH,14q23,NM_002431,Nucleotide excision repair (NER)
+XPG (ERCC5),3_ incision,13q33,NM_000123,Nucleotide excision repair (NER)
+ERCC1,5_ incision subunit,19q13.2-q13.3,NM_001983,Nucleotide excision repair (NER)
+XPF (ERCC4),5_ incision subunit,16p13.3-p13.13,NM_005236,Nucleotide excision repair (NER)
+LIG1,DNA joining,19q13.2-q13.3,NM_000234,Nucleotide excision repair (NER)
+CSA (CKN1),Cockayne syndrome; needed for transcription-coupled NER,5q12-q31,NM_000082,NER-related
+CSB (ERCC6),Cockayne syndrome; needed for transcription-coupled NER,10q11,NM_000124,NER-related
+XAB2 (HCNP),Cockayne syndrome; needed for transcription-coupled NER,19,NM_020196,NER-related
+DDB1,Complex defective in XP group E,11q12-q13,NM_001923,NER-related
+DDB2,Mutated in XP group E,11p12-p11,NM_000107,NER-related
+MMS19,Transcription and NER,10q24.1,AW852889,NER-related
+RAD51,Homologous pairing,15q15.1,NM_002875,Homologous recombination
+RAD51L1 (RAD51B),Rad51 homolog,14q23-q24,U84138,Homologous recombination
+RAD51C,Rad51 homolog,17q11-qter,NM_002876,Homologous recombination
+RAD51L3 (RAD51D),Rad51 homolog,17q11,NM_002878,Homologous recombination
+DMC1,"Rad51 homolog, meiosis",22q13.1,NM_007068Ê,Homologous recombination
+XRCC2,DNA break and cross-link repair,7q36.1,NM_005431,Homologous recombination
+XRCC3,DNA break and cross-link repair,14q32.3,NM_005432,Homologous recombination
+RAD52,Accessory factor for recombination,12p13-p12.2,NM_002879,Homologous recombination
+RAD54L,Accessory factor for recombination,1p32,NM_003579,Homologous recombination
+RAD54B,Accessory factor for recombination,8q21.3-q22,NM_012415,Homologous recombination
+BRCA1,Accessory factor for transcription and recombination,17q21,NM_007295,Homologous recombination
+BRCA2,"Cooperation with RAD51, essential function",13q12.3,NM_000059,Homologous recombination
+RAD50,"ATPase in complex with MRE11A, NBS1",5q31,NM_005732,Homologous recombination
+MRE11A,3_ exonuclease,11q21,NM_005590,Homologous recombination
+NBS1,Mutated in Nijmegen breakage syndrome,8q21-q24,NM_002485,Homologous recombination
+Ku70 (G22P1),DNA end binding,22q13.2-q13.31,NM_001469,mdit>Nonhomologous end-joining
+Ku80 (XRCC5),DNA end binding,2q35,M30938,mdit>Nonhomologous end-joining
+PRKDC,DNA-dependent protein kinase catalytic subunit,8q11,NM_006904,mdit>Nonhomologous end-joining
+LIG4,Nonhomologous end-joining,13q33-q34,NM_002312,mdit>Nonhomologous end-joining
+XRCC4,Nonhomologous end-joining,5q13-q14,NM_003401,mdit>Nonhomologous end-joining
+MTH1 (NUDT1),8-oxoGTPase,7p22,NM_002452,Sanitization of nucleotide pools
+DUT,dUTPase,15q15-q21.1,NM_001948,Sanitization of nucleotide pools
+POLB,BER in nuclear DNA,8p11.2,NM_002690,DNA polymerases (catalytic subunits)
+POLG,BER in mitochondrial DNA,15q25,NM_002693,DNA polymerases (catalytic subunits)
+POLD1,NER and MMR,19q13.3,NM_002691,DNA polymerases (catalytic subunits)
+POLE1,NER and MMR,12q24.3,NM_006231,DNA polymerases (catalytic subunits)
+PCNA,Sliding clamp for pol delta and pol epsilon,20p12,NM_002592,DNA polymerases (catalytic subunits)
+REV3L (POLZ),"DNA pol zeta catalytic subunit, essential function",6q21,NM_002912,DNA polymerases (catalytic subunits)
+REV7 (MAD2L2),DNA pol zeta subunit,1p36,NM_006341,DNA polymerases (catalytic subunits)
+REV1,dCMP transferase,2q11.1-q11.2,NM_016316,DNA polymerases (catalytic subunits)
+POLH,XP variant,6p12.2-p21.1,NM_006502,DNA polymerases (catalytic subunits)
+POLI (RAD30B),Lesion bypass,18q21.1,NM_007195,DNA polymerases (catalytic subunits)
+POLQ,DNA cross-link repair,3q13.31,NM_006596,DNA polymerases (catalytic subunits)
+DINB1 (POLK),Lesion bypass,5q13,NM_016218,DNA polymerases (catalytic subunits)
+POLL,Meiotic function,10q23,NM_013274,DNA polymerases (catalytic subunits)
+POLM,Presumed specialized lymphoid function,7p13,NM_013284,DNA polymerases (catalytic subunits)
+TRF4-1,Sister-chromatid cohesion,5p15,AF089896,DNA polymerases (catalytic subunits)
+TRF4-2,Sister-chromatid cohesion,16p13.3,AF089897,DNA polymerases (catalytic subunits)
+FEN1 (DNase IV),5_ nuclease,11q12,NM_004111,Editing and processing nucleases
+TREX1 (DNase III),3_ exonuclease,3p21.2-p21.3,NM_007248,Editing and processing nucleases
+TREX2,3_ exonuclease,Xq28,NM_007205,Editing and processing nucleases
+EX01 (HEX1),5_ exonuclease,1q42-q43,NM_003686,Editing and processing nucleases
+SPO11,endonuclease,20q13.2-q13.3,NM_012444,Editing and processing nucleases
+UBE2A (RAD6A),Ubiquitin-conjugating enzyme,Xq24-q25,NM_003336,Rad6 pathway
+UBE2B (RAD6B),Ubiquitin-conjugating enzyme,5q23-q31,NM_003337,Rad6 pathway
+RAD18,Assists repair or replication of damaged DNA,3p24-p25,AB035274,Rad6 pathway
+UBE2VE (MMS2),Ubiquitin-conjugating complex,8p,AF049140,Rad6 pathway
+"UBE2N (UBC13, BTG1)",Ubiquitin-conjugating complex,12,NM_003348,Rad6 pathway
+BLM,Bloom syndrome helicase,15q26.1,NM_000057,Genes defective in diseases associated with sensitivity to DNA damaging agents
+WRN,Werner syndrome helicase/3_-exonuclease,8p12-p11.2,NM_000553,Genes defective in diseases associated with sensitivity to DNA damaging agents
+RECQL4,Rothmund-Thompson syndrome,8q24.3,NM_004260,Genes defective in diseases associated with sensitivity to DNA damaging agents
+ATM,Ataxia telangiectasia,11q22-q23,NM_000051,Genes defective in diseases associated with sensitivity to DNA damaging agents
+FANCA,Involved in tolerance or repair of DNA cross-links,16q24.3,NM_000135,Fanconi anemia
+FANCB,Involved in tolerance or repair of DNA cross-links,N/A,N/A,Fanconi anemia
+FANCC,Involved in tolerance or repair of DNA cross-links,9q22.3,NM_000136,Fanconi anemia
+FANCD,Involved in tolerance or repair of DNA cross-links,3p26-p22,N/A,Fanconi anemia
+FANCE,Involved in tolerance or repair of DNA cross-links,6p21-p22,NM_021922,Fanconi anemia
+FANCF,Involved in tolerance or repair of DNA cross-links,11p15,AF181994,Fanconi anemia
+FANCG (XRCC9),Involved in tolerance or repair of DNA cross-links,9p13,NM_004629,Fanconi anemia
+SNM1 (PS02),DNA cross-link repair,10q25,D42045,Other identified genes with a suspected DNA repair function
+SNM1B,Related to SNM1,1p13.1-p13.3,AL137856,Other identified genes with a suspected DNA repair function
+SNM1C,Related to SNM1,10,AA315885,Other identified genes with a suspected DNA repair function
+RPA4,Similar to RPA2,Xq,NM_013347,Other identified genes with a suspected DNA repair function
+ABH (ALKB),Resistance to alkylation damage,14q24,X91992,Other identified genes with a suspected DNA repair function
+PNKP,Converts some DNA breaks to ligatable ends,19q13.3-q13.4,NM_007254,Other identified genes with a suspected DNA repair function
+ATR,ATM- and PI-3KÐlike essential kinase,3q22-q24,NM_001184Ê,Other conserved DNA damage response genes
+RAD1 (S. pombe) homolog,PCNA-like DNA damage sensor,5p13.3-p13.2,NM_002853,Other conserved DNA damage response genes
+RAD9 (S. pombe) homolog,PCNA-like DNA damage sensor,11q13.1-q13.2,NM_004584,Other conserved DNA damage response genes
+HUS1 (S. pombe) homolog,PCNA-like DNA damage sensor,7p13-p12,NM_004507,Other conserved DNA damage response genes
+RAD17 (RAD24),RFC-like DNA damage sensor,5q13,NM_002873,Other conserved DNA damage response genes
+TP53BP1,BRCT protein,15q15-q21,NM_005657,Other conserved DNA damage response genes
+CHEK1,Effector kinase,11q22-q23,NM_001274,Other conserved DNA damage response genes
+CHK2 (Rad53),Effector kinase,22q12.1,NM_007194,Other conserved DNA damage response genes

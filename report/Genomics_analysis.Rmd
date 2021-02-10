@@ -1,0 +1,3521 @@
+---
+title: 'Examine the consistency between tumour and PDTO RNA-seq data'
+author: 
+  - name: 'Momeneh (Sepideh) Foroutan'
+    affiliation: 'Prof Hollande Lab'
+    url: https://www.monash.edu/discovery-institute/huntington-lab
+date: '2019-03-25'
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 6
+    gallery: TRUE
+    highlight: tango
+    lightbox: TRUE
+    self_contained: TRUE
+    thumbnails: FALSE
+    number_sections: TRUE	
+    toc_depth: 4
+    use_bookdown: TRUE
+    code_folding: hide
+  html_document2:
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options: 
+  chunk_output_type: inline
+---
+
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+# Set up and overview
+This document contains code for processing, filtrating and integration of the WES and WGS data, including both mutation and CNVs. These are associated with the manuscript by [Behrenbruch and Foroutan et al manuscript](https://www.biorxiv.org/content/10.1101/2021.02.04.429849v1). At the end of this report, we also generate the Suppl Figure 1, summarising the data types used in this study. 
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+options(max.print = "75")
+
+opts_chunk$set(
+  cache = TRUE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  root.dir = normalizePath("."))
+
+opts_knit$set(width = 65)
+```
+
+```{r, message = FALSE, message=F}
+library(readr)
+library(dplyr)
+library(RColorBrewer)
+library(grid)
+library(ComplexHeatmap)
+library(ggplot2)
+
+outPath <- "../output/Genomics/"
+figPath <- "../figure/Genomics/"
+scriptPath <- "../script/"
+dataPath <- "../data/Genomics/"
+sigPath <- "../data/Signatures/"
+geneAnnotPath <- "../data/RNAseq/geneAnnotation/"
+
+wesPath <- "../data/Genomics/WES/Mutation/"
+wgsPath <- "../data/Genomics/WGS/Mutation/"
+wesPath_cnv <- "../data/Genomics/WES/CNV/"
+wgsPath_cnv <- "../data/Genomics/WGS/CNV/"
+```
+
+
+# WES mutation data
+
+There are 53 WES data.
+Here, I read the the data and first filter for bidirectionality of reads, read depth, and allele frquency. Then, after combining all the data together, I filter for more criteria (see next section). Specifically, we only focus on protein coding genes.
+```{r warning = F, message = F, cache = T}
+flist <- list.files(wesPath)
+flist <- flist[grepl(".tsv", flist)]
+
+# d[grep("PMCDP", colnames(d))]
+# d[grep("PMCAD$", colnames(d))]
+# grep("PMCBDIR", colnames(d), value = T)
+
+ident <- c("Intersection", "mutect-vardict", "mutect2-mutect", "mutect2-vardict")
+
+
+kpCols <- c('#CHROM', 'POS', 'HGNC_ID', 'SYMBOL', 'Gene', 'Feature', 'Feature_type', 
+  'ID', 'REF', 'ALT', 'QUAL', 'FILTER', 'AC', 'AF', 'AN', 'MAX_AF', 'Identified',
+  'Consequence', 'DOMAINS', 'CANONICAL', 'CCDS', 'ENSP', 'EXON', 'INTRON', 'cDNA_position',
+  'CDS_position', 'Protein_position', 'Amino_acids', 'Codons', 'HGVSc', 'HGVSp', 'gnomAD_AF', 
+  'dbSNP_ids', 'COSMIC_ids', 'PUBMED', 'Condel', 'PolyPhen', 'SIFT', 'BIOTYPE',
+  'IMPACT', 'SWISSPROT', 'SYMBOL_SOURCE', 'TREMBL', 'UNIPARC', 'VARIANT_CLASS', 'VT', 'TYPE')
+ 
+d00 <- data.frame(matrix(ncol = length(kpCols) + 2, nrow = 0))
+colnames(d00) <- c(kpCols, "Sample", "n")
+
+for(f in flist) {
+  dd <-
+  readr::read_tsv(paste0(wesPath, f),  comment = "##")
+  
+  d <- dd[dd$Identified %in% ident,]
+
+  
+  d <- d[d[grep("PMCBDIR", colnames(d))[1]] == "Y", ]
+  
+  d <- d[d[grep("PMCDP", colnames(d))[1]] >= 10, ] ## total read depth for tum  columns should be high
+  d <- d[d[grep("PMCDP", colnames(d))[2]] >= 10, ] ## normal columns should be high too
+  
+  d <- d[d[grep("PMCAD$", colnames(d))[1]] >= 5, ]  ## only in tum - maybe look at the normal < 5 too
+  d <- d[d[grep("PMCAD$", colnames(d))[2]] < 5, ]  ## the alternate allele should not be high in nomals: < 5 
+  
+  d <- d[d$MAX_AF < 0.01 | d$MAX_AF == ".", ]
+  
+  
+  sampleName <- unlist(strsplit(f, "[--]"))[[1]]
+  
+  d <- d[, kpCols] %>%
+    mutate(Sample = sampleName) %>%
+    group_by(SYMBOL) %>%
+    add_tally() %>%
+    arrange(-n) %>%
+    data.frame()
+  
+  d00 <- rbind(d00, d)
+
+}
+
+# write.table(
+#   d00,
+#   "./output/WES_QualityFilter.txt",
+#   row.names = F,
+#   sep = "\t"
+#   )
+ 
+
+# dCan %>% group_by(SYMBOL) %>% tally() %>% arrange(-n) %>% data.frame() %>% head(80)
+## 161709
+# d00 <- read.table(
+#   "./output/WES_QualityFilter.txt",
+#   header = T,
+#   sep = "\t"
+#   )
+```
+
+
+
+
+Below are the number of mutations for each sample before further filtering:
+```{r}
+table(d00$Sample)[order(table(d00$Sample))]
+```
+
+
+## Filter data
+
+### Filer BioType - Protein coding genes
+If we want to remove everything other than the protein coding genes:
+Number of mutations in the low quality samples drop even more: 
+
+PD0032CoT1: 0, 
+TM190LT: 3, 
+yPPF166LT: 137, 
+yPCN571LT: 217, 
+PCC002Cot: 304.
+```{r}
+## 94579
+dpr <- d00[d00$BIOTYPE == "protein_coding", ]
+table(dpr$Sample)[order(table(dpr$Sample))]
+```
+
+
+### Filter Impact
+Keep High and moderate, BUT Remove: low, modifier (less evidence for functional conseq - silence).
+Number of mutations in the low quality samples: 
+
+PD0032CoT1: 0, 
+TM190LT: 0, 
+yPPF166LT: 22, 
+yPCN571LT: 16, 
+PCC002Cot: 63
+```{r}
+table(dpr$IMPACT)
+dprImp <- dpr[dpr$IMPACT %in% c("HIGH", "MODERATE"), ]
+table(dprImp$Sample)[order(table(dprImp$Sample))]
+```
+
+
+### Tidy up the consequences
+```{r}
+dprImp$Consequence <- as.character(dprImp$Consequence)
+table(dprImp$Consequence)
+```
+
+The severity of the mutatoins are not the same. Looking at the [Ensembl website](https://asia.ensembl.org/info/genome/variation/prediction/predicted_data.html), we prioretise mutations:
+
+**HIGH IMPACTS:**\n
+*transcript_ablation
+*splice_acceptor_variant
+*splice_donor_variant
+*stop_gained
+*frameshift_variant
+*stop_lost
+*start_lost
+*transcript_amplification
+
+**MODERATE IMPACT:**\n
+*inframe_insertion
+*inframe_deletion
+*missense_variant
+*protein_altering_variant
+
+**LOW IMPACT:**\n
+*splice_region_variant
+*incomplete_terminal_codon_variant
+*start_retained_variant
+*stop_retained_variant
+*synonymous_variant
+
+**MODIFIER IMPACT:**\n
+*coding_sequence_variant
+*mature_miRNA_variant
+*5_prime_UTR_variant
+*3_prime_UTR_variant
+*non_coding_transcript_exon_variant
+*intron_variant
+*NMD_transcript_variant
+*non_coding_transcript_variant
+*upstream_gene_variant
+*downstream_gene_variant
+*TFBS_ablation
+*TFBS_amplification
+*TF_binding_site_variant
+*regulatory_region_ablation
+*regulatory_region_amplification
+*feature_elongation
+*regulatory_region_variant
+*feature_truncation
+*intergenic_variant
+
+Therefore, we replace annottaions that have more than one consequences with the one which is more sever:
+```{r}
+dprImp$Consequence[dprImp$Consequence =="frameshift_variant,splice_region_variant"] <- "frameshift_variant" ## 2
+dprImp$Consequence[dprImp$Consequence =="frameshift_variant,stop_lost"] <- "frameshift_variant" ## 2
+dprImp$Consequence[dprImp$Consequence =="missense_variant,splice_region_variant"] <- "missense_variant" ## 2
+dprImp$Consequence[dprImp$Consequence =="start_lost,5_prime_UTR_variant"] <- "start_lost" ## 2
+dprImp$Consequence[dprImp$Consequence =="stop_gained,splice_region_variant"] <- "stop_gained" ## 2
+
+table(dprImp$Consequence)
+```
+
+Add a column for location of the variants to be consistent to WGS data:
+```{r}
+dprImp$Location <- paste0("chr", dprImp$X.CHROM, ":", dprImp$POS)
+
+## correct two of the sample names in WES:
+dprImp$Sample[dprImp$Sample == "SSF997COTORG10"] <- "SSF997COTORG10-5"
+dprImp$Sample[dprImp$Sample == "SSF997LTOrg6"] <- "SSF997LTOrg6-3"
+
+dprImp$Data <- "WES"
+```
+
+
+```{r}
+# Save this version as well as the one after canonical:
+# write.table(dprImp,
+#   file = "paste0(outPath, WES_QualityFilter_ProteinCoding_ImpactHighModerate.txt"),
+#   sep = "\t",
+#   row.names = F)
+
+# dprImp <-
+#   read.table(
+#     "./output/WES_QualityFilter_ProteinCoding_ImpactHighModerate.txt",
+#     header = T,
+#     sep = "\t", 
+#     stringsAsFactors = F,
+#   )
+```
+
+
+### Filter Canonical
+Filter to only retain the **canonical transcripts**
+Number of mutations in the low quality samples: 
+
+PD0032CoT1: 0, 
+TM190LT: 0, 
+yPPF166LT: 8, 
+yPCN571LT: 5, 
+PCC002Cot: 21
+```{r}
+dCan <- dprImp[dprImp$CANONICAL == "YES", ]
+table(dCan$Sample)[order(table(dCan$Sample))]
+```
+
+
+```{r}
+dCan$VARIANT_CLASS <- as.character(dCan$VARIANT_CLASS)
+dCan$Variant_Types[dCan$VARIANT_CLASS == "deletion"] <- "DEL"
+dCan$Variant_Types[dCan$VARIANT_CLASS == "insertion"] <- "INS"
+dCan$Variant_Types[dCan$VARIANT_CLASS == "SNV"] <- "SNV"
+table(dCan$Variant_Types)
+```
+
+Some genes may have more than one canonical transcripts - Add number of genes again to the data after filtering for canonical transcripts.
+
+```{r}
+dCan <- dCan[, - which(colnames(dCan) == "n")] %>%
+  group_by(Sample, SYMBOL) %>%
+  add_tally() %>%
+  arrange(-n) %>%
+  data.frame()
+
+table(dCan$n)
+
+```
+
+### Unique Canonical Genes - WES
+There are some genes with more than one canonical transcript. We annotate those with more than one canonical transcript as MHT - there are 233 multiHits
+```{r}
+table(dCan$Consequence, dCan$n)
+## There are 465 genes with more than one canonical transcripts
+length(unique(dCan$SYMBOL[dCan$n > 1]))
+
+dCan$Variant_Types[dCan$n > 1 ] <- "MHT"
+table(dCan$Variant_Types)
+```
+
+
+
+```{r}
+# Save this version of canonical variants. We then make a unique list of genes for plotting purposes.
+# write.table(dCan,
+#   file = "./output/WES_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals.txt",
+#   sep = "\t",
+#   row.names = F)
+# dCan <-
+#   read.table(
+#     "./output/WES_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals.txt",
+#     header = T,
+#     sep = "\t", 
+#     stringsAsFactors = F,
+#   )
+```
+
+Take the unique genes for each sample. Genes with more than one canonical transcript have been already annotated as MHT.
+
+```{r}
+## Now get the distinct canonical genes
+dCanUniq <- dCan %>%
+  group_by(Sample) %>% 
+  distinct(SYMBOL, .keep_all = T) %>% 
+  data.frame()
+
+# write.table(dCanUniq,
+#   file = paste0(outPath, "WES_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#   sep = "\t",
+#   row.names = F)
+
+```
+
+PD0032CoT1: 0, 
+TM190LT: 0, 
+yPPF166LT: 7, 
+yPCN571LT: 5, 
+PCC002Cot: 21
+
+```{r}
+# dCanUniq <-
+#   read.table(
+#     "./output/WES_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt",
+#     header = T,
+#     sep = "\t",
+#     stringsAsFactors = F
+#   )
+table(dCanUniq$Sample)[order(table(dCanUniq$Sample))]
+```
+
+
+
+# WGS mutation data
+There are 36 WGS file. These samples were alspo annotated using teh same VEP version to be consistent with the VEP version of the WES. The data we read here have been already filtered for quality, bidrirectionality of the read and read depth. So we need to filter based on AF. Then we filter to have protein coding genes and high Impact variants.
+
+## Filter data
+### Protein Coding genes
+```{r, warning=F, message=F}
+glist <- list.files(wgsPath)
+# m <- read.table(paste0(wgsPath, "PCC002_PCC002_Cot_1.txt"), header = T, sep = "\t")
+glist <- paste0( glist, "/tsv/", glist, ".vep.tsv")
+
+
+kpColsg <- c(
+  "HGNC_ID", "SYMBOL", "Gene", "Feature", "Feature_type", "AF", "MAX_AF" , "Consequence",     
+  "DOMAINS", "CANONICAL", "CCDS" , "ENSP", "EXON", "INTRON", "cDNA_position", "CDS_position",    
+  "Protein_position", "Amino_acids", "Codons", "HGVSc",           
+  "HGVSp", "gnomAD_AF", "PUBMED", "PolyPhen", "SIFT", "BIOTYPE", "IMPACT", "SWISSPROT",       
+  "SYMBOL_SOURCE", "TREMBL", "UNIPARC", "VARIANT_CLASS",  
+  "Location", "Allele", "STRAND", "GENE_PHENO", "Existing_variation", "DISTANCE", "SOMATIC"
+  )
+
+d0g <- data.frame(matrix(ncol = length(kpColsg) + 2, nrow = 0))
+colnames(d0g) <- c(kpColsg, "Sample", "n")
+
+for(g in glist) {
+  dd <-
+  readr::read_tsv(paste0(wgsPath, g),  comment = "##")
+  
+  dd$MAX_AF <- as.numeric(dd$MAX_AF)
+  d <- dd[dd$MAX_AF < 0.01 | is.na(dd$MAX_AF), ]
+
+  d <- d[d$BIOTYPE == "protein_coding", ]
+  d <- d[d$IMPACT %in% c("HIGH", "MODERATE"), ]
+  
+  sampleName <- unlist(strsplit(g, "[/]"))[[3]]
+  sampleName <- unlist(strsplit(sampleName, "[.]"))[[2]]
+  
+  d <- d[, kpColsg] %>%
+    mutate(Sample = sampleName) %>%
+    group_by(SYMBOL) %>%
+    add_tally() %>%
+    arrange(-n) %>%
+    data.frame()
+  
+  d0g <- rbind(d0g, d)
+}
+
+
+## I commented the filtration steps for protein coding and impacts and exported d0g; then ran it again by including those codes and saved a filtered version
+# d <- d[d$BIOTYPE == "protein_coding", ]
+# d <- d[d$IMPACT %in% c("HIGH", "MODERATE"), ]
+
+ # write.table(d0g,
+ #  file = "./output/WGS_QualityFilter.txt",
+ #  sep = "\t",
+ #  row.names = F) 
+```
+
+
+SSF977_CoT, SSF977_CoT_Rpt, yPPF166_LT,  PSH095_LT  and PCC002_Cot_1 have the lowest number of mutated genes.
+```{r}
+table(d0g$Sample)[order(table(d0g$Sample))]
+```
+
+
+```{r}
+table(d0g$Consequence)
+```
+
+### Tidy up the consequences
+The severity of the mutatoins are not the same. I looked at the Ensembl website to prioretise mutations, and we replace annottaions that have more than one consequences with the one which is more sever:
+```{r}
+d0g$Consequence[d0g$Consequence =="frameshift_variant,splice_region_variant"] <- "frameshift_variant" ## 2
+d0g$Consequence[d0g$Consequence =="frameshift_variant,start_lost"] <- "frameshift_variant" ## 2
+d0g$Consequence[d0g$Consequence =="missense_variant,splice_region_variant"] <- "missense_variant" ## 2
+d0g$Consequence[d0g$Consequence =="splice_acceptor_variant,coding_sequence_variant,intron_variant"] <- "splice_acceptor_variant" ## 2
+d0g$Consequence[d0g$Consequence =="splice_donor_variant,coding_sequence_variant"] <- "splice_donor_variant" ## 2
+d0g$Consequence[d0g$Consequence =="splice_donor_variant,coding_sequence_variant,intron_variant"] <- "splice_donor_variant" ## 2
+d0g$Consequence[d0g$Consequence =="stop_gained,splice_region_variant"] <- "stop_gained" ## 2
+
+table(d0g$Consequence)
+```
+
+
+```{r}
+d0g$Data <- "WGS"
+
+
+# write.table(d0g,
+#  file = "./output/WGS_QualityFilter_ProteinCoding_ImpactHighModerate.txt",
+#  sep = "\t",
+#  row.names = F)
+# d0g <- read.table("./output/WGS_QualityFilter_ProteinCoding_ImpactHighModerate.txt",
+# header = T, sep = "\t")
+```
+
+
+### Filter Canonical
+```{r}
+dCang <- d0g[d0g$CANONICAL == "YES",]
+table(dCang$Sample)[order(table(dCang$Sample))]
+```
+
+```{r}
+dCang$VARIANT_CLASS <- as.character(dCang$VARIANT_CLASS)
+dCang$Variant_Types[dCang$VARIANT_CLASS == "deletion"] <- "DEL"
+dCang$Variant_Types[dCang$VARIANT_CLASS == "insertion"] <- "INS"
+dCang$Variant_Types[dCang$VARIANT_CLASS == "SNV"] <- "SNV"
+dCang$Variant_Types[dCang$VARIANT_CLASS == "substitution"] <- "SUB"
+table(dCang$Variant_Types)
+```
+
+Add n to canonical genes
+```{r}
+dCang <- dCang[, - which(colnames(dCang) == "n")] %>%
+  group_by(Sample, SYMBOL) %>%
+  add_tally() %>%
+  arrange(-n) %>%
+  data.frame()
+
+table(dCang$n)
+```
+
+### Unique Canonical Genes - WGS
+There are some genes with more than one canonical transcript. We annotate those with more than one canonical transcript as MHT - there are 85 multiHits
+```{r}
+table(dCang$Consequence, dCang$n)
+## There are 465 genes with more than one canonical transcripts
+length(unique(dCang$SYMBOL[dCang$n > 1]))
+
+dCang$Variant_Types[dCang$n > 1 ] <- "MHT"
+table(dCang$Variant_Types)
+```
+
+
+
+```{r}
+# Save this version of canonical variants. We then make a unique list of genes for plotting purposes.
+# write.table(dCang,
+#   file = "./output/WGS_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals.txt",
+#   sep = "\t",
+#   row.names = F)
+# dCang <-
+#   read.table(
+#     "./output/WGS_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals.txt",
+#     header = T,
+#     sep = "\t"
+#   )
+```
+
+Take the unique genes for each sample. Genes with more than one canonical transcript have been already annotated as MHT.
+```{r}
+## Now get the distinct canonical genes
+dCanUniqg <- dCang %>%
+  group_by(Sample) %>% 
+  distinct(SYMBOL, .keep_all = T) %>% 
+  data.frame()
+
+# write.table(dCanUniqg,
+#   file = paste0(outPath, "WGS_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#   sep = "\t",
+#   row.names = F)
+
+# dCanUniqg <-
+#   read.table(
+#     paste0(outPath, "WGS_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#     header = T,
+#     sep = "\t"
+#   )
+
+
+table(dCanUniqg$Sample)[order(table(dCanUniqg$Sample))]
+```
+
+
+
+# Combine WES and WGS data
+## Combine Canonical, unique genes
+Here, we combine WES and WGS data, and update IDs so that we have unique patient IDs consistent with other data types used in the apper. 
+```{r}
+# dCanUniq <-
+#   read.table(
+#     paste0(outPath, "WES_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#     header = T,
+#     sep = "\t",
+#     stringsAsFactors = F
+#   )
+# 
+# dCanUniqg <-
+#   read.table(
+#     paste0(outPath, "WGS_QualityFilter_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#     header = T,
+#     sep = "\t",
+#     stringsAsFactors = F
+#   )
+
+comCols <- intersect(colnames(dCanUniq), colnames(dCanUniqg))
+
+dwesCanUniq <- dCanUniq[, comCols]
+dwgsCanUniq <- dCanUniqg[, comCols]
+
+dgenCanUniq <- rbind(dwesCanUniq, dwgsCanUniq)
+
+# write.table(dgenCanUniq,
+#   file = paste0(outPath, "Genomics_WES_WGS_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#   sep = "\t",
+#   row.names = F)
+
+# dgenCanUniq <-
+#   read.table(
+#     paste0(outPath, "Genomics_WES_WGS_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes.txt"),
+#     header = T,
+#     sep = "\t",
+#     stringsAsFactors = F
+#   )
+
+
+ann6 <-
+  read.csv(
+    paste0(dataPath, "Annotation_allSamples_Long_168rows_20200623.csv"),
+    stringsAsFactors = F
+  )
+
+ann6$UniqueIDs[grepl("WES", ann6$Unique_IDs)] <-
+  paste(ann6$UniqueIDs[grepl("WES", ann6$Unique_IDs)], "WES", sep = "_")
+
+annData_mut <- ann6[ann6$SampleName %in% dgenCanUniq$Sample ,]
+
+## Merge genomics data with ann data to have uniqueID for sample names
+dgenCanUniqAnn <-
+  merge(
+    dgenCanUniq,
+    annData_mut[, c("UniqueIDs", "SampleName")],
+    by.x = "Sample",
+    by.y = "SampleName",
+    all.x = T
+  )
+
+write.table(dgenCanUniqAnn,
+  file = paste0(outPath, "Genomics_WES_WGS_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes_PatientIDs.txt"),
+  sep = "\t",
+  row.names = F)
+
+# dgenCanUniqAnn <-
+#   read.table(
+#     paste0(outPath, "Genomics_WES_WGS_ProteinCoding_ImpactHighModerate_Canonicals_UniqueGenes_PatientIDs.txt"),
+#     header = T,
+#     sep = "\t",
+#     stringsAsFactors = F
+#   )
+```
+
+The merged mutation data has 86 samples, and below are the number of variant types and mutation consequences.
+```{r}
+length(unique(dgenCanUniq$Sample)[order(unique(dgenCanUniq$Sample))])
+table(dgenCanUniq$Variant_Types)
+table(dgenCanUniq$Consequence)
+```
+
+## Process merged data
+
+```{r}
+d <- dgenCanUniqAnn[, c('UniqueIDs', 'Location', 'SYMBOL', 'Consequence', 'Variant_Types')]
+head(d)
+
+# library(tidyverse)
+
+variants <-  d[, c('UniqueIDs', 'SYMBOL', 'Variant_Types')] %>% 
+  spread(key = UniqueIDs, value = Variant_Types) %>% 
+  data.frame(check.names = F)
+
+conseq <- d[, c('UniqueIDs', 'SYMBOL', 'Consequence')] %>% 
+  spread(key = UniqueIDs, value = Consequence) %>% 
+  data.frame(check.rows = F)
+
+
+gsymbols <- variants$SYMBOL
+variants <- as.matrix(variants[, -1])
+row.names(variants) <- gsymbols
+
+gsymbols <- conseq$SYMBOL
+conseq <- as.matrix(conseq[, -1])
+row.names(conseq) <- gsymbols
+
+
+varConsq <- matrix(paste(variants, conseq, sep = ";"), ncol = ncol(variants))
+colnames(varConsq) <- colnames(conseq)
+rownames(varConsq) <- rownames(conseq)
+
+```
+
+Make the column names to be the same as Unique IDs.
+```{r}
+
+ann6 <- ann6[! ann6$Data == "3prime_RNAseq", ]
+
+ann6$UniqueIDs[!ann6$UniqueIDs %in% colnames(variants)]
+colnames(variants)[!colnames(variants) %in% ann6$UniqueIDs]
+
+## correct a few names: 
+ann6 <- ann6[ann6$UniqueIDs  %in%  colnames(variants), ]
+# 
+# colnames(variants)[colnames(variants) == "yP078_LT_Tum"] <- "P078_LT_Tum"
+# colnames(variants)[colnames(variants) == "yP166_CoT_Tum"] <- "P166_CoT_Tum"
+# colnames(variants)[colnames(variants) == "yP190_A_LT_Org"] <- "P190_A_LT_Org"
+# colnames(variants)[colnames(variants) == "yP190_A_LT_Tum"] <- "P190_A_LT_Tum"
+# colnames(variants)[colnames(variants) == "yP486_D_LT_Org"] <- "P486_D_LT_Org"
+# colnames(variants)[colnames(variants) == "yP486_D_LT_Tum"] <- "P486_D_LT_Tum"
+
+# colnames(conseq) <- colnames(varConsq) <- colnames(variants)
+
+rownames(ann6) <- ann6$UniqueIDs
+ann6 <- ann6[colnames(variants), ]
+all(rownames(ann6) == colnames(variants))
+```
+
+### Filter for low quality samples
+Some of these are already filtered as they did not have any mutations after filtering for the low quality samples, such as:
+"P032_CoT1_Tum"  "yP166_LT_Tum"   "yP190_T_LT_Tum". So we end up with 78/89 samples in the end. 
+```{r}
+
+lowQual <- c(
+  "P002_CoT_Tum",
+  "P002_CoT1_Tum",
+  "P002_CoT_Tum_WES",
+  "P032_CoT1_Tum",
+  "P095_LT_Tum",
+  "P997_CoT_Rpt_Tum",
+  "P997_CoT_Tum",
+  "yP166_LT_Tum_WES",
+  "yP571_LT_Tum"
+)
+
+
+## 78/86 samples
+variants <- variants[, ! colnames(variants) %in% lowQual]
+conseq <- conseq[, ! colnames(conseq) %in% lowQual]
+varConsq <- varConsq[, ! colnames(varConsq) %in% lowQual]
+
+
+# head( rowSums(!is.na(variants))[order(rowSums(!is.na(variants)), decreasing = T)], 60)
+
+ann6 <- ann6[! ann6$UniqueIDs  %in% lowQual, ]
+```
+
+
+
+### Consolidate multiple samples into one
+As for some of the samples we have two or more genomics data, we consolidate samples together so that we can visualise mutation per sample.
+```{r}
+var2 <- variants
+conseq2 <- conseq
+varConsq2 <- varConsq
+
+newnames <- gsub("_WES", "", colnames(var2))
+newnames <- gsub("_Rpt", "", newnames)
+newnames <- gsub("_16", "", newnames)
+newnames <- gsub("_17", "", newnames)
+
+colnames(var2) <- colnames(conseq2) <- colnames(varConsq2) <- ann6$Consolidated_UniqueIDs <- newnames
+
+repSamples <- newnames[duplicated(newnames)]
+
+```
+
+There is no inconsistent insersion or deletion. The only inconsistent is when a mutation is called or not, so we can consider any call to be a true call. So, when we have "NA_Mutation", we consider "mutation".
+
+#### Updated VarConseq data
+Below are the samples with replicated data:
+
+*"P095_CoT_Org"
+*"P095_LT_Org"
+*"P095_LT_Tum"
+*"P275_LT_Tum"
+*"yP689_LT_Tum"
+```{r}
+consolidatedReps_VarConseq <- lapply(repSamples, function(currentSample) {
+  indx <- which(colnames(varConsq2) == currentSample)
+  print(colnames(varConsq2)[indx])
+  repVarConseq2 <- varConsq2[, indx]
+  repVarConseq2 <- data.frame(repVarConseq2, check.names = F)
+  
+  repVarConseq2$Mutation <- paste(repVarConseq2[,1], repVarConseq2[, 2], sep = " -- ")
+  
+  return(repVarConseq2)
+
+})
+
+names(consolidatedReps_VarConseq) <- repSamples
+
+# lapply(consolidatedReps_VarConseq, function(x) table(x$Mutation))
+```
+
+
+First we replace the consistent NAs (i.e.) NA_NA with NA.Then we replace NA_Mut, with Mut, and finally replace Mut_MHT or MHT_Mut with Mut. Replace MHT with SNV/INS/DEL if possible. 
+```{r}
+consolidatedReps_VarConseq2 <- lapply(repSamples, function(x) {
+  currentData <- consolidatedReps_VarConseq[[x]]
+  currentData$Mutation[currentData$Mutation == "NA;NA -- NA;NA"] <-
+    "NA;NA"
+  currentData$Mutation <-
+    gsub(" -- NA;NA", "", currentData$Mutation)
+  currentData$Mutation <-
+    gsub("NA;NA -- ", "", currentData$Mutation)
+  
+  ## ----- for inconsistent ones:
+  currentData$Mutation[currentData$Mutation == "MHT;frameshift_variant -- DEL;frameshift_variant"] <-
+    "DEL;frameshift_variant"
+  
+  currentData$Mutation[currentData$Mutation == "MHT;missense_variant -- INS;frameshift_variant"] <-
+    "INS;frameshift_variant"
+  
+  currentData$Mutation[currentData$Mutation == "MHT;missense_variant -- SNV;missense_variant" |
+      currentData$Mutation == "SNV;missense_variant -- MHT;missense_variant"] <-
+    "SNV;missense_variant"
+  
+  currentData$Mutation[currentData$Mutation == "MHT;splice_donor_variant -- SNV;splice_donor_variant"] <-
+    "SNV;splice_donor_variant"
+  
+  ## ----- for consistent ones:
+  
+  currentData$Mutation[currentData$Mutation == "DEL;inframe_deletion -- DEL;inframe_deletion"] <-
+    "DEL;inframe_deletion"
+  
+  currentData$Mutation[currentData$Mutation == "SNV;missense_variant -- SNV;missense_variant"] <-
+    "SNV;missense_variant"
+  
+  currentData$Mutation[currentData$Mutation == "INS;inframe_insertion -- INS;inframe_insertion"] <-
+    "INS;inframe_insertion"
+  
+  currentData$Mutation[currentData$Mutation == "MHT;missense_variant -- MHT;missense_variant"] <-
+    "MHT;missense_variant"
+  
+  currentData$Mutation[currentData$Mutation == "SNV;splice_donor_variant -- SNV;splice_donor_variant"] <-
+    "SNV;splice_donor_variant"
+  
+  currentData$Mutation[currentData$Mutation == "SNV;stop_gained -- SNV;stop_gained"] <-
+    "SNV;stop_gained"
+  
+  currentData$Mutation[currentData$Mutation == "DEL;frameshift_variant -- DEL;frameshift_variant"] <-
+    "DEL;frameshift_variant"
+  
+  currentData$Mutation[currentData$Mutation == "INS;frameshift_variant -- INS;frameshift_variant"] <-
+    "INS;frameshift_variant"
+  
+  return(currentData)
+})
+
+names(consolidatedReps_VarConseq2) <- names(consolidatedReps_VarConseq)
+# lapply(consolidatedReps_VarConseq2, function(x) table(x$Mutation))
+```
+
+
+Now we generate another versions of Var, Conseq and VarConseq data which have only one column per sample; first we remove duplicated columns (which results in 68 columns instead of 78 columns) and then add 5 columns for the 5 samples with the mutation columns we generated above, resulting in 73 columns in total.
+```{r}
+
+varConsq2 <- varConsq2[, !colnames(varConsq2)  %in% repSamples]
+
+varConsq_consolidated <- cbind(
+  consolidatedReps_VarConseq2$P095_CoT_Org$Mutation,
+  consolidatedReps_VarConseq2$P095_LT_Org$Mutation,
+  consolidatedReps_VarConseq2$P095_LT_Tum$Mutation,
+  consolidatedReps_VarConseq2$P275_LT_Tum$Mutation,
+  consolidatedReps_VarConseq2$yP689_LT_Tum$Mutation
+  )
+
+rownames(varConsq_consolidated) <- rownames(consolidatedReps_VarConseq2$P095_CoT_Org)
+colnames(varConsq_consolidated) <- c(
+  "P095_CoT_Org",
+  "P095_LT_Org",
+  "P095_LT_Tum",
+  "P275_LT_Tum",
+  "yP689_LT_Tum"
+  )
+
+varConsq_consolidated <- cbind(varConsq2, varConsq_consolidated)
+```
+
+
+#### Updated Var and Conseq data
+```{r}
+
+var_consolidated <- varConsq_consolidated
+for(i in 1:ncol(var_consolidated)){
+  var_consolidated[, i] <- sapply(var_consolidated[, i], function(x) unlist(strsplit(x, ";"))[1])
+}
+
+conseq_consolidated <- varConsq_consolidated
+for(i in 1:ncol(conseq_consolidated)){
+  conseq_consolidated[, i] <- sapply(conseq_consolidated[, i], function(x) unlist(strsplit(x, ";"))[2])
+}
+```
+
+Then we also generate a new sample annotation file that has info for the consolidated samples. We export this annotation as well as the data with both variants and consequences as Suppl Tables for the paper 
+```{r}
+## Also make a new ann6 by taking the unique IDs of the consolidated IDs:
+sum(duplicated(ann6$Consolidated_UniqueIDs))
+
+ann_consolidated <- ann6[!duplicated(ann6$Consolidated_UniqueIDs), ]
+
+rownames(ann_consolidated) <- ann_consolidated$Consolidated_UniqueIDs
+
+## change the ySHH sample whcih is treated to the preOp_FF 
+# ann_consolidated$FOLFOXBase_PrePostOp_RNAseq[ann_consolidated$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PostOp" & ann_consolidated$ChemoStatus == "Treated"] <- "FOLFOX_PreOp"
+
+# ann_consolidated$FOLFOXBase_PrePostOp[ann_consolidated$FOLFOXBase_PrePostOp == "FOLFOX_PostOp" & ann_consolidated$ChemoStatus == "Treated"] <- "FOLFOX_PreOp"
+
+
+mutList_consolidated <- list(
+  varConsq_consolidated = varConsq_consolidated,
+  var_consolidated = var_consolidated,
+  conseq_consolidated = conseq_consolidated,
+  ann_consolidated = ann_consolidated
+)
+
+# saveRDS(
+#   mutList_consolidated,
+#   file = paste0(
+#     outPath,
+#     "mutDataList_consolidatedRepSamples_filteredLowQual.RDS"
+#   )
+# )
+# write.table(
+#   varConsq_consolidated,
+#   paste0(
+#     outPath,
+#     "Suppl_Table_Mutations_Consolidated_VarConseq.txt"
+#   ),
+#   row.names = T,
+#   sep = "\t"
+# )
+# 
+# 
+# delCols <-
+#   c(
+#     'X',
+#     'Patients',
+#     'Samples',
+#     'Treatment',
+#     'FOLFOXBase_PrePostOp',
+#     'Run',
+#     'Matched_TumOrg_RNAseq',
+#     'Matched_TumOrg_Genomics',
+#     'Matched_TumOrg_RNAseq_Genomics',
+#     'Matched_RNAseqGenomics_Tum',
+#     'Matched_RNAseqGenomics_Org',
+#     'SampleName',
+#     'Unique_IDs'
+#   )
+# 
+# 
+# write.csv(
+#   ann_consolidated[, ! colnames(ann_consolidated) %in% delCols],
+#   paste0(
+#     outPath,
+#     "Suppl_Table_Mutations_Consolidated_SampleAnnotation.csv"
+#   ),
+#   row.names = F
+# )
+
+
+```
+
+
+
+
+# Barplots of mutations stats for matched samples
+For matched samples: 38 samples --> 19 matched samples
+```{r}
+matched <-
+  ann_consolidated$Consolidated_UniqueIDs[!is.na(ann_consolidated$Matched_TumOrg_Genomics)]
+
+## remove P002_CoT_Org as it does not have matched tum data (was removed due to low purity)
+matchedVarConsq_consolidated <- varConsq_consolidated[, matched]
+matchedVarConsq_consolidated <- matchedVarConsq_consolidated[, 
+  ! colnames(matchedVarConsq_consolidated) == "P002_CoT_Org"]
+
+
+## separate orgs from tum:
+matchedVarConsq_org <- matchedVarConsq_consolidated[, grepl("Org", colnames(matchedVarConsq_consolidated))]
+
+matchedVarConsq_tum <- matchedVarConsq_consolidated[, grepl("Tum", colnames(matchedVarConsq_consolidated))]
+
+tab3_org <- data.frame(table(matchedVarConsq_org))
+tab3_org$Sample.Type <- "Org"
+colnames(tab3_org)[1] <- "VarConseq"
+
+tab3_tum <- data.frame(table(matchedVarConsq_tum))
+tab3_tum$Sample.Type <- "Tum"
+colnames(tab3_tum)[1] <- "VarConseq"
+
+tab3 <- rbind(tab3_org, tab3_tum)
+
+tab3 <- tab3[tab3$VarConseq != "NA;NA",]
+tab3 <- tab3[order(tab3$Freq, decreasing = T), ]
+
+tab3$Consequences <- sapply(as.character(tab3$VarConseq),
+  function(x)
+    unlist(strsplit(x, ";"))[[2]])
+
+tab3$Variants <- sapply(as.character(tab3$VarConseq),
+  function(x)
+    unlist(strsplit(x, ";"))[[1]])
+
+
+# pdf(
+#   paste0(
+#     figPath,
+#     "Figure_1c_left_MutationVariantsConseq_stat_MatchedSamples.pdf"
+#   ),
+#   height = 2.8,
+#   width = 6
+# )
+tab3 %>% 
+  group_by(Variants) %>% 
+  mutate(Sum_Freq = sum(Freq)) %>% 
+  arrange(Sum_Freq, Consequences) %>%
+ggplot(aes(x = reorder(Variants, Sum_Freq), y = log2(Freq + 1), fill = Consequences)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ Sample.Type) +
+  scale_fill_manual(values = brewer.pal(10, "Paired")) +
+  ylab("log2(Frequency + 1)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1) ,
+    axis.title.y = element_blank()
+    ) + coord_flip()
+# dev.off()
+
+```
+
+
+# Oncoprints
+
+## Select genes for Mutations
+
+### DNA repair genes
+downloaded from https://science.sciencemag.org/content/291/5507/1284
+```{r}
+## 128 genes
+dnaRep <- read.csv(paste0(sigPath, "DNA_Repair_Genes_Wood_Science_2001.csv"),
+  stringsAsFactors = F)
+### USE THIS INSTEAD:
+### gannot <- read.delim(paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+repIDs <- alias2SymbolUsingNCBI(dnaRep$Gene.name..synonyms., paste0(geneAnnotPath, "Homo_sapiens.gene_info"))
+
+## merge these to the data:
+repIDs <- cbind(repIDs, dnaRep)
+
+## remove NAs and duplicated symbols. It goes down to 91 genes:
+repIDs <- repIDs[complete.cases(repIDs$Symbol), ]
+repIDs <- repIDs[!duplicated(repIDs$Symbol), ]
+# 
+# gg <- repIDs$Symbol
+```
+
+### Known genes mutated in CRC
+These genes have been taken from TCGA and Wood et al paper
+
+```{r}
+knowng0 <- read.csv(paste0(dataPath, "CuratedKnownGenesCRC.csv"), stringsAsFactors = F)
+knowng0 <- unique(knowng0$Genes)
+
+knowng <-
+  c(
+    ## from TCGA:
+    "APC",
+    "TP53",
+    "KRAS",
+    "NRAS",
+    "BRAF",
+    "TTN",
+    "PIK3CA",
+    "FBXW7",
+    "SMAD2",
+    "SMAD4",
+    "TCF7L2",
+    "FAM123B",
+    "CTNNB1",
+    "KIAA1804",
+    "SOX9",
+    "MYO1B",
+    "CASP8",
+    "CDC27",
+    "FZD3",
+    "MIER3",
+    "TCERG1",
+    "MAP7",
+    "PTPN12",
+    "TGFBR2",
+    "ACVR2A",
+    "EDNRB",
+    "ACVR1B",
+    "GPC6",
+    "MLH1",
+    "MLH3",
+    "MSH3",
+    "MSH6",
+    "PMS2",
+    "POLE",
+    ## added from Wood et al
+    "CSMD3",
+    "TNN",
+    "NAV3",
+    "EPHA3",
+    "EPHB6",
+    "MAP2K7",
+    "PTEN",
+    "ADAMTSL3",
+    "GUCY1A2",
+    "OR51E1",
+    "LAMA1",
+    "EDRF1",
+    "ADAMTS18",
+    "FBN2",
+    "SEC8L1",
+    "RET",
+    "KIAA2022",
+    "MMP2",
+    "GNAS",
+    "STAB1",
+    "AGC1"
+  )
+
+knownGenes <- unique(c(knowng0, knowng))
+```
+
+### Cell cycle, E2F, and Spindle
+From C2 category of MSigDB:
+
+"BIOCARTA_G2_PATHWAY"                                                            
+"BIOCARTA_G1_PATHWAY"                                                            
+"BIOCARTA_CELLCYCLE_PATHWAY"                                                     
+"KEGG_CELL_CYCLE"                                                                
+"REACTOME_CELL_CYCLE"                                                            
+"REACTOME_CELL_CYCLE_CHECKPOINTS"                                                
+"REACTOME_CELL_CYCLE_MITOTIC"                                                    
+"REACTOME_REGULATION_OF_MITOTIC_CELL_CYCLE"                                      
+"REACTOME_G2_M_CHECKPOINTS"                                                      
+"REACTOME_G2_M_DNA_DAMAGE_CHECKPOINT"                                            
+"REACTOME_MITOTIC_G2_G2_M_PHASES"                                                
+"REACTOME_G0_AND_EARLY_G1"                                                       
+"REACTOME_G1_PHASE"                                                              
+"REACTOME_G1_S_SPECIFIC_TRANSCRIPTION"                                           
+"REACTOME_MITOTIC_G1_G1_S_PHASES"                                                
+"REACTOME_S_PHASE"                                                               
+"REACTOME_TP53_REGULATES_TRANSCRIPTION_OF_GENES_INVOLVED_IN_G1_CELL_CYCLE_ARREST"
+"WHITFIELD_CELL_CYCLE_LITERATURE"                                                
+
+"FISCHER_G1_S_CELL_CYCLE"                    
+"FISCHER_G2_M_CELL_CYCLE"                   
+"WHITFIELD_CELL_CYCLE_G1_S"                  
+"WHITFIELD_CELL_CYCLE_G2"                   
+"WHITFIELD_CELL_CYCLE_G2_M"                  
+"WHITFIELD_CELL_CYCLE_M_G1"                 
+"WHITFIELD_CELL_CYCLE_S"                     
+"SA_G1_AND_S_PHASES"                        
+"SA_G2_AND_M_PHASES"                         
+"STEGMEIER_PREMITOTIC_CELL_CYCLE_REGULATORS"
+"REICHERT_G1S_REGULATORS_AS_PI3K_TARGETS"    
+"EGUCHI_CELL_CYCLE_RB1_TARGETS"              
+  
+From C6 category of MSigDB:
+
+"P53_V1_C6"         
+"P53_V2_C6"
+
+
+E2F signatures:
+
+  E2F_DNArep_Reactome                   
+  E2F_h                 
+  E2F_Pid 
+  E2F1_targets_Kalma 
+  E2F1_targets_Kong   
+  E2F1_targets_Stanelle 
+  E2F1.2_targets_Ishida 
+  E2F1.4_bindPromoter_Ren                    
+  E2F3 
+  E2F3_oncogenic_Bild       
+  E2F3_targets_Kong        
+  SKP2E2F_Biocarta 
+  
+  
+Spindle signatures:
+  'GO_ATTACHMENT_OF_MITOTIC_SPINDLE_MICROTUBULES_TO_KINETOCHORE',
+  'GO_ATTACHMENT_OF_SPINDLE_MICROTUBULES_TO_KINETOCHORE',
+  'GO_CHROMOSOME_MOVEMENT_TOWARDS_SPINDLE_POLE',
+  'GO_ESTABLISHMENT_OF_MEIOTIC_SPINDLE_LOCALIZATION',
+  'GO_ESTABLISHMENT_OF_MITOTIC_SPINDLE_LOCALIZATION',
+  'GO_ESTABLISHMENT_OF_SPINDLE_ORIENTATION',
+  'GO_MEIOTIC_SPINDLE',
+  'GO_MEIOTIC_SPINDLE_ORGANIZATION',
+  'GO_MITOTIC_SPINDLE',
+  'GO_MITOTIC_SPINDLE_ASSEMBLY',
+  'GO_MITOTIC_SPINDLE_ASTRAL_MICROTUBULE',
+  'GO_MITOTIC_SPINDLE_MIDZONE',
+  'GO_MITOTIC_SPINDLE_MIDZONE_ASSEMBLY',
+  'GO_MITOTIC_SPINDLE_ORGANIZATION',
+  'GO_MITOTIC_SPINDLE_POLE',
+  'GO_POSITIVE_REGULATION_OF_ATTACHMENT_OF_SPINDLE_MICROTUBULES_TO_KINETOCHORE',
+  'GO_POSITIVE_REGULATION_OF_SPINDLE_ASSEMBLY',
+  'GO_POSITIVE_REGULATION_OF_SPINDLE_CHECKPOINT',
+  'GO_REGULATION_OF_ATTACHMENT_OF_SPINDLE_MICROTUBULES_TO_KINETOCHORE',
+  'GO_REGULATION_OF_MITOTIC_SPINDLE_ASSEMBLY',
+  'GO_REGULATION_OF_SPINDLE_ASSEMBLY',
+  'GO_REGULATION_OF_SPINDLE_CHECKPOINT',
+  'GO_REGULATION_OF_SPINDLE_ORGANIZATION',
+  'GO_SPINDLE',
+  'GO_SPINDLE_ASSEMBLY',
+  'GO_SPINDLE_ASSEMBLY_INVOLVED_IN_MEIOSIS',
+  'GO_SPINDLE_ELONGATION',
+  'GO_SPINDLE_LOCALIZATION',
+  'GO_SPINDLE_MICROTUBULE',
+  'GO_SPINDLE_MIDZONE',
+  'GO_SPINDLE_MIDZONE_ASSEMBLY',
+  'GO_SPINDLE_ORGANIZATION',
+  'GO_SPINDLE_POLE',
+  'GO_SPINDLE_POLE_CENTROSOME',
+  'HALLMARK_MITOTIC_SPINDLE',
+  'MITOTIC_SPINDLE_ORGANIZATION_AND_BIOGENESIS',
+  'REACTOME_INHIBITION_OF_THE_PROTEOLY',
+  'TIC_ACTIVITY_OF_APC_C_REQUIRED_FOR_',
+  'THE_ONSET_OF_ANAPHASE_BY_MITOTIC_SP',
+  'INDLE_CHECKPOINT_COMPONENTS',
+  'REACTOME_MITOTIC_SPINDLE_CHECKPOINT',
+  'SPINDLE',
+  'SPINDLE_MICROTUBULE',
+  'SPINDLE_ORGANIZATION_AND_BIOGENESIS',
+  'SPINDLE_POLE'
+  
+
+```{r}
+e2fCellCycleSAC <- readRDS (paste0(sigPath, "E2F_CellCycle_Spindle_Genes_Symbols.RDS"))
+```
+
+## Define current Mut plotting data
+```{r}
+currentPlotData <- varConsq_consolidated   ## has var and conseq
+# currentPlotData <- mutList_consolidated$varConsq_consolidated  
+```
+
+## Define colours and functions for the oncoplot
+```{r}
+
+##------- For varConseq
+
+col <- c(
+  missense_variant = brewer.pal(8, "Dark2")[3],
+  frameshift_variant = brewer.pal(8, "Dark2")[1],
+
+  inframe_insertion = brewer.pal(8, "Dark2")[7],
+  inframe_deletion = brewer.pal(8, "Dark2")[6],
+
+  splice_acceptor_variant = brewer.pal(8, "Blues")[3],
+  splice_donor_variant = brewer.pal(8, "Blues")[5],
+  splice_region_variant = brewer.pal(8, "Blues")[7],
+
+  stop_gained = brewer.pal(8, "Greens")[3],
+  stop_lost = brewer.pal(8, "Greens")[5],
+  protein_altering_variant = brewer.pal(8, "Greens")[7],
+
+  start_lost = brewer.pal(8, "Reds")[6]
+)
+
+alterfun <- list(
+   background = function(x, y, w, h) grid.rect(x, y, w, h,
+    gp = gpar(fill = "white", 
+      color = brewer.pal(8, "Greys")[5], 
+      lwd = 0.1)),
+  missense_variant = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["missense_variant"], col = NA)),
+  frameshift_variant = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["frameshift_variant"], col = NA)),
+  inframe_insertion = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["inframe_insertion"], col = NA)),
+  inframe_deletion = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["inframe_deletion"], col = NA)), 
+  splice_acceptor_variant = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["splice_acceptor_variant"], col = NA)), 
+  splice_donor_variant = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["splice_donor_variant"], col = NA)), 
+  stop_gained = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["stop_gained"], col = NA)), 
+  stop_lost = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["stop_lost"], col = NA)), 
+  start_lost = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["start_lost"], col = NA)), 
+  protein_altering_variant = function(x, y, w, h)
+    grid.rect(x, y, w * 0.9, h * 0.9,
+      gp = gpar(fill = col["protein_altering_variant"], col = NA)),
+  SNV = function(x, y, w, h) 
+    grid.points(x, y, pch = 2, size = unit(0.5, "char")),
+  # SNV = function(x, y, w, h)
+  #     grid.rect(x, y, w, h,
+  #       gp = gpar(fill = NA, lwd = 2)),
+  INS = function(x, y, w, h)
+      grid.points(x, y, pch = 16, size = unit(0.5, "char")),
+  DEL = function(x, y, w, h)
+      grid.points(x, y, pch = 1, size = unit(0.5, "char")),
+  SUB = function(x, y, w, h) 
+    grid.points(x, y, pch = 25, size = unit(0.5, "char")),
+  # SUB = function(x, y, w, h)
+  #     grid.segments(x - w*0.5, y - h*0.5, x + w*0.5, y + h*0.5,
+  #       gp = gpar(lwd = 2)),
+  MHT = function(x, y, w, h) {
+      grid.segments(x - w*0.2, y - h*0.2, x + w*0.2, y + h*0.2, gp = gpar(lwd = 0.8))
+      grid.segments(x + w*0.2, y - h*0.2, x - w*0.2, y + h*0.2, gp = gpar(lwd = 0.8))
+  }
+)
+
+```
+
+Also define colours of sample annotations for oncoplot.
+```{r}
+colfunc <-
+      colorRampPalette(c(
+        brewer.pal(11, 'BrBG')[-c(1, 6, 11)],
+        brewer.pal(11, 'PRGn')[-c(1, 6, 11)],
+        brewer.pal(11, 'RdYlBu')
+      ))
+ 
+## CoT of the P166 is naive:
+# ann_consolidated$PatientID[ann_consolidated$PatientID == "yP166"] <- "P166"
+
+
+patientCol  <- colfunc(length(unique(ann_consolidated$PatientID)))
+names(patientCol) <-
+  unique(as.character(ann_consolidated$PatientID))[order(unique(as.character(ann_consolidated$PatientID)))]
+names(patientCol)[names(patientCol) == "yP166"] <- "P166"
+
+dataCol <- c(brewer.pal(8, "Set2")[1], brewer.pal(8, "Set2")[2])
+names(dataCol) <- c("WES", "WGS")
+
+respCol <- c("pink", "pink3", "darkred")
+names(respCol) <- c("Sensitive", "Semi-sensitive", "Resistant")
+
+respGroupCol <- c("pink2", "red3")
+names(respGroupCol) <- c("GoodResponse", "PoorResponse")
+
+respTumCol <- c(brewer.pal(11, "BrBG")[c(11, 9, 7)])
+names(respTumCol) <- c("PD", "PR", "CR")
+
+genderCol <- c("aquamarine", "aquamarine4")
+names(genderCol) <- c("Male", "Female")
+
+chemoCol  <- brewer.pal(8, "Blues")[c(3, 7, 5)]
+names(chemoCol) <- c("Naive", "Distant", "Treated")
+
+tissueCol <- c("gray20", "gray85")
+names(tissueCol) <- c("LT", "CoT")
+
+siteCol <- brewer.pal(9, "Greens")[c(3, 7, 5)]
+names(siteCol) <- names(table(annData_current$Site))
+
+synchMetachCol  <- c(brewer.pal(8, "Set2")[3], brewer.pal(8, "Set3")[3])
+names(synchMetachCol) <- names(table(annData_current$SynchMetach))
+
+SampleTypeCol <- c("dark blue","light blue" )
+names(SampleTypeCol) <- c("Tum", "Org")
+```
+
+## Sample selection
+```{r}
+# ##----- Take matched samples
+# currentSamples <- matchedSamples
+# 
+# ##------ Take matched sampels treate by FF:
+# currentSamples <- matchedSamples[matchedSamples  %in% ann_consolidated$Consolidated_UniqueIDs[!is.na(ann_consolidated$Response)]]
+# 
+# ## To get highMut only in the matched samples.
+# # gg2 <- rownames(currentPlotData)[rowSums(!is.na(currentPlotData[, currentSamples])) > 7]
+# 
+# ##----- Take only organoids treated by FOLFOX
+# orgAnnot <- ann_consolidated[! is.na(ann_consolidated$Response_Org) & ann_consolidated$Platform == "GenomicsID_Org", ]
+# orgAnnot <- orgAnnot[order(orgAnnot$Response_Org), ]
+# currentSamples <- orgAnnot$Consolidated_UniqueIDs
+# 
+# ##----- Take all organoids  
+# orgAnnot <- ann_consolidated[ann_consolidated$Platform == "GenomicsID_Org", ]
+# # orgAnnot <- orgAnnot[order(orgAnnot$Response), ]
+# currentSamples <- orgAnnot$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# ##----- Take all tumour samples 
+# tumAnnot <- ann_consolidated[ann_consolidated$Platform == "GenomicsID_Tum", ]
+# # orgAnnot <- orgAnnot[order(orgAnnot$Response), ]
+# currentSamples <- tumAnnot$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# ##----- Take tum samples that are naive
+# tumNaiveAnnot <- ann_consolidated[
+#  ann_consolidated$ChemoStatus == "Naive" &
+#     ann_consolidated$Platform == "GenomicsID_Tum", ]
+# 
+# tumNaiveAnnot <- tumNaiveAnnot[complete.cases(tumNaiveAnnot$Consolidated_UniqueIDs), ]
+# 
+# # orgAnnot <- orgAnnot[order(orgAnnot$Response), ]
+# currentSamples <- tumNaiveAnnot$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# 
+# ##----- Take tumour samples treated by FF
+# tumAnnot <- ann_consolidated[
+#  (
+#    ## ann_consolidated$FOLFOXBase_PrePostOp == "FOLFOX_PreOp" |only for survival analysis we use this column
+#   ann_consolidated$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PreOp") &
+#     ann_consolidated$Platform == "GenomicsID_Tum", ]
+# 
+# tumAnnot <- tumAnnot[complete.cases(tumAnnot$Consolidated_UniqueIDs), ]
+# 
+# # orgAnnot <- orgAnnot[order(orgAnnot$Response), ]
+# currentSamples <- tumAnnot$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# 
+# ##----- Take tumour samples treated by any treatment
+# tumTrAnnot <- ann_consolidated[
+#  (ann_consolidated$ChemoStatus == "Treated") &
+#     ann_consolidated$Platform == "GenomicsID_Tum", ]
+# 
+# tumTrAnnot <- tumTrAnnot[complete.cases(tumTrAnnot$Consolidated_UniqueIDs), ]
+# 
+# # orgAnnot <- orgAnnot[order(orgAnnot$Response), ]
+# currentSamples <- tumTrAnnot$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# 
+# ##------ take all LT samples
+# 
+# lts <- ann_consolidated[ann_consolidated$Tissue == "LT", ]
+# currentSamples <- lts$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# 
+# 
+# ##------ take all LT and TUM samples
+# 
+# lts <- ann_consolidated[ann_consolidated$Tissue == "LT" & ann_consolidated$Sample.Type == "Tum", ]
+# currentSamples <- lts$Consolidated_UniqueIDs
+# currentSamples <- currentSamples[order(currentSamples)]
+# 
+# ##------ OR take all samples
+# currentSamples <- colnames(currentPlotData)[order(colnames(currentPlotData))]
+```
+
+
+
+## Subset data to plot
+Subset the mutation and annotation file based on the selected genes and samples. We also subset patients' colours based on which samples we include. 
+
+### HMGs in Matched samples 
+Reproduce figure 1c, right panel. 
+Here we can select which samples we want and plot the oncoprint for them; we choose to plot matched samples. 
+Note that PCC002_CoT did have a matched sample, but I removed that due to low quality, so we remove the org of this sample too. when we plot the matched samples.
+
+**Select samples**
+```{r}
+## 38 matched samples
+matchedSamples <- ann_consolidated$Consolidated_UniqueIDs[! is.na(ann_consolidated$Matched_TumOrg_Genomics)]
+matchedSamples <- matchedSamples[order(matchedSamples)]
+## remove P002_CoT_Org as we have already removed the Tum data for this due to low quality:
+matchedSamples <- matchedSamples[! matchedSamples == "P002_CoT_Org"]
+
+currentSamples <- matchedSamples
+```
+
+**Select highly mutated genes in current samples**
+for all HMGs, we got those present in > 18% for matched tum and organoids, in > 20% of samples for most other cases, except for the FF treated org and tum that we got those in > 25% of samples.
+
+```{r}
+kp <- rowSums(! currentPlotData[, currentSamples ] == "NA;NA") > 0.18*ncol(currentPlotData[, currentSamples])
+
+summary(kp)
+highMutData <- currentPlotData[kp, ]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- unique(rownames(highMutData))
+
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+From 126 DDR_All genes, we have 91 genes that had unqiue updated gene symbols, from which only 15 were mutated at least in one samples. Only 5 genes were mutated in PDTOs treated by FOLFOX, and 5 genes in tumour samples treated by FOLFOX; the only overlapping gene from the two sets of 5 genes was ATM. 
+
+from 93 known CRC genes, 47 existed in our data.
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Highly mutated genes in matched tumour - organoids"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+# textSize <- 10
+annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Tum)]
+# columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Org)]
+# columnOrder <- annData_current$Consolidated_UniqueIDs[order( annData_current$Consolidated_UniqueIDs)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  # get_type = get_type_fun,
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  # Data = annData_current$Data,
+  Patients = annData_current$PatientID,
+  # Gender = annData_current$Gender,
+  Tissue = annData_current$Tissue,
+  # Site = annData_current$Site,
+  # SynchMetach = annData_current$SynchMetach,
+  # ChemoStatus = annData_current$ChemoStatus,
+  # Response_Tum = annData_current$Response_Tum,
+  # Response_Org = annData_current$Response_Org,
+  # Response_group = annData_current$Response_group, 
+  Sample.Type = annData_current$Sample.Type,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+  #       direction = "horizontal",
+  #       nrow = 2)
+  # 
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  # top_annotation_height = unit(20, "mm"),
+  # column_order = colnames(dplot_current),
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  # remove_empty_columns =
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Figure_1c_OncoPlot_HighlyMutGenes_Matched_TumOrg.pdf"), height = 5.5, width = 10)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    # pch = c(28, 16, 21, 4), 
+    # pch = c(2, 16, 21, 28, 25), 
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+### HMGs in PDTOs treated by FOLFOX
+
+**Select samples**
+```{r}
+orgAnnot <- ann_consolidated[! is.na(ann_consolidated$Response_Org) & ann_consolidated$Platform == "GenomicsID_Org", ]
+orgAnnot <- orgAnnot[order(orgAnnot$Response_Org), ]
+currentSamples <- orgAnnot$Consolidated_UniqueIDs
+```
+
+**Select highly mutated genes in current samples**
+HMGs: Genes mutated in > 25% of the PDTOs treated by FOLFOX. 
+
+```{r}
+kp <- rowSums(! currentPlotData[, currentSamples ] == "NA;NA") > 0.25*ncol(currentPlotData[, currentSamples])
+
+summary(kp)
+highMutData <- currentPlotData[kp, ]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- unique(rownames(highMutData))
+
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Highly mutated genes in PDTOs \ntreated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+# textSize <- 10
+# annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+# columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Tum)]
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Org)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  # Response_Tum = annData_current$Response_Tum,
+  Response_Org = annData_current$Response_Org,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Figure_4a_OncoPlot_HighlyMutGenes_OrgFF.pdf"), height = 5, width = 7)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+
+
+### HMGs in Tum treated by FOLFOX
+
+**Select samples**
+```{r}
+tumAnnot <- ann_consolidated[
+ (ann_consolidated$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PreOp") &
+    ann_consolidated$Platform == "GenomicsID_Tum", ]
+
+tumAnnot <- tumAnnot[complete.cases(tumAnnot$Consolidated_UniqueIDs), ]
+
+currentSamples <- tumAnnot$Consolidated_UniqueIDs
+currentSamples <- currentSamples[order(currentSamples)]
+```
+
+**Select highly mutated genes in current samples**
+HMGs: Genes mutated in > 25% of the PDTOs treated by FOLFOX. 
+
+```{r}
+kp <- rowSums(! currentPlotData[, currentSamples ] == "NA;NA") > 0.25*ncol(currentPlotData[, currentSamples])
+
+summary(kp)
+highMutData <- currentPlotData[kp, ]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- unique(rownames(highMutData))
+
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Highly mutated genes in tumour \nsample treated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Tum)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Response_Tum = annData_current$Response_Tum,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Figure_4b_OncoPlot_HighlyMutGenes_TumFF.pdf"), height = 4.3, width = 7)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+
+
+### Cell cycle, E2F, Spindle in Orgs treated by FOLFOX
+
+**Select samples**
+```{r}
+orgAnnot <- ann_consolidated[! is.na(ann_consolidated$Response_Org) & ann_consolidated$Platform == "GenomicsID_Org", ]
+orgAnnot <- orgAnnot[order(orgAnnot$Response_Org), ]
+currentSamples <- orgAnnot$Consolidated_UniqueIDs
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- e2fCellCycleSAC
+
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Cell cycle, E2F, and spindle genes mutated in \nat least 2 PDTOs treated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+kpp <- rowSums(! dplot_current == "NA;NA") >= 2
+dplot_current <- dplot_current[kpp, ]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Org)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Response_Org = annData_current$Response_Org,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(
+  paste0(
+    figPath,
+    "Figure_4c_OncoPlot_CellCycle_E2F_Spindle_OrgFF.pdf"
+  ),
+  height = 12,
+  width = 7.5
+)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+### Cell cycle, E2F, Spindle in Tum treated by FOLFOX
+
+**Select samples**
+```{r}
+tumAnnot <- ann_consolidated[
+ (ann_consolidated$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PreOp") &
+    ann_consolidated$Platform == "GenomicsID_Tum", ]
+
+tumAnnot <- tumAnnot[complete.cases(tumAnnot$Consolidated_UniqueIDs), ]
+
+currentSamples <- tumAnnot$Consolidated_UniqueIDs
+currentSamples <- currentSamples[order(currentSamples)]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- e2fCellCycleSAC
+
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Cell cycle, E2F, and spindle genes mutated in \nat least 2 tumour sample treated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+kpp <- rowSums(! dplot_current == "NA;NA") >= 2
+dplot_current <- dplot_current[kpp, ]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Tum)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Response_Tum = annData_current$Response_Tum,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(
+  paste0(
+    figPath,
+    "Figure_4d_OncoPlot_CellCycle_E2F_Spindle_TumFF.pdf"
+  ),
+  height = 9,
+  width = 7
+)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+### Known genes in all samples 
+Supp Figure 4a.
+**Select samples**
+```{r}
+currentSamples <- colnames(currentPlotData)[order(colnames(currentPlotData))]
+```
+
+
+Take only genes present in the mutation data
+```{r}
+gg <- knownGenes
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+from 93 known CRC genes, 47 existed in our data.
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Genes known to be mutated in CRC in all PDTO and tumour samples"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+columnOrder <- annData_current$Consolidated_UniqueIDs[order( annData_current$Consolidated_UniqueIDs)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Sample.Type = annData_current$Sample.Type,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Supp_Figure_4a_OncoPlot_KnownGenes_CRC_AllSamples.pdf"), height = 10, width = 13)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+
+
+### Known genes in CRLM samples 
+Supp Figure 4b.
+**Select samples**
+```{r}
+lts <- ann_consolidated[ann_consolidated$Tissue == "LT" & ann_consolidated$Sample.Type == "Tum", ]
+currentSamples <- lts$Consolidated_UniqueIDs
+currentSamples <- currentSamples[order(currentSamples)]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- knownGenes
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "Genes known to be mutated in CRC in all CRLM Tum samples"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+columnOrder <- annData_current$Consolidated_UniqueIDs[order( annData_current$Consolidated_UniqueIDs)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Sample.Type = annData_current$Sample.Type,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Supp_Figure_4b_OncoPlot_KnownGenes_CRC_CRLM_TumSamples.pdf"), height = 8, width = 10)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+### DDR genes in Tum samples treated by FOLFOX
+Supp Figure 9b.
+**Select samples**
+```{r}
+tumAnnot <- ann_consolidated[
+ (ann_consolidated$FOLFOXBase_PrePostOp_RNAseq == "FOLFOX_PreOp") &
+    ann_consolidated$Platform == "GenomicsID_Tum", ]
+
+tumAnnot <- tumAnnot[complete.cases(tumAnnot$Consolidated_UniqueIDs), ]
+
+currentSamples <- tumAnnot$Consolidated_UniqueIDs
+currentSamples <- currentSamples[order(currentSamples)]
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- repIDs$Symbol
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "DNA damage repair genes mutated in\npatient sample treated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Tum)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Response_Tum = annData_current$Response_Tum,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Supp_Figure_9b_OncoPlot_DDR_TumFF.pdf"), height = 4.5, width = 7)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+
+
+### DDR genes in Orgs treated by FOLFOX
+Supp Figure 9a.
+**Select samples**
+```{r}
+orgAnnot <- ann_consolidated[! is.na(ann_consolidated$Response_Org) & ann_consolidated$Platform == "GenomicsID_Org", ]
+orgAnnot <- orgAnnot[order(orgAnnot$Response_Org), ]
+currentSamples <- orgAnnot$Consolidated_UniqueIDs
+```
+
+Take only genes present in the mutation data
+```{r}
+gg <- repIDs$Symbol
+gg2 <- gg[gg %in% rownames(currentPlotData)]
+```
+
+**Update patients' colour**
+```{r}
+currentTitle <- "DNA damage repair genes mutated in\nPDTOs treated by FOLFOX"
+
+dplot_current <- currentPlotData[gg2, currentSamples]
+
+ann_consolidated2 <- ann_consolidated
+ann_consolidated2$PatientID[ann_consolidated2$PatientID == "yP166"] <- "P166"
+ann_consolidated2$Response_Tum[ann_consolidated2$PatientID == "yP610"] <- "PR"
+
+annData_current <- ann_consolidated2[currentSamples,]
+
+patientCol0 <- patientCol[names(patientCol)  %in% annData_current$PatientID]
+
+currentCol <-  list(
+  Data = dataCol,
+  Patients = patientCol0,
+  Gender = genderCol,
+  Tissue = tissueCol,
+  Site = siteCol,
+  SynchMetach = synchMetachCol,
+  ChemoStatus = chemoCol,
+  Response_Tum = respTumCol,
+  Response_Org = respCol,
+  Sample.Type = SampleTypeCol
+)
+```
+
+```{r}
+textSize <- 10
+# annData_current$Response_Tum <- factor(annData_current$Response_Tum, levels = c("PD", "PR", "CR"))
+columnOrder <- annData_current$Consolidated_UniqueIDs[order(annData_current$Response_Org)]
+
+oncoplt_mut <- ComplexHeatmap::oncoPrint(
+  dplot_current,
+  alter_fun = alterfun,
+  col = col, 
+  top_annotation = HeatmapAnnotation(
+    cbar = anno_oncoprint_barplot(),
+  Patients = annData_current$PatientID,
+  Tissue = annData_current$Tissue,
+  Response_Org = annData_current$Response_Org,
+    col = currentCol,
+    annotation_name_side = "left",
+    annotation_legend_param = list(
+      title_gp = gpar(fontsize = textSize + 1, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize))
+    ),
+  name = "Mutation consequence",
+  show_column_names = F, 
+  column_order = columnOrder,
+  remove_empty_rows = T,
+  column_title = currentTitle, 
+  heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 3, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize + 2), direction = "horizontal", nrow = 2
+  )
+)
+
+
+pdf(paste0(figPath, "Supp_Figure_9a_OncoPlot_DDR_OrgFF.pdf"), height = 4.3, width = 7)
+draw(oncoplt_mut, 
+  heatmap_legend_side = "bottom",
+  heatmap_legend_list = list(
+  Legend(labels = c("SNV", "INS", "DEL", "MHT", "SUB"), 
+    type = c("points"),  
+    pch = c(2, 16, 21, 4, 25), 
+    border = "black", 
+    background = "white"))
+  )
+dev.off()
+```
+
+
+
+
+# CNV 
+**visulaisation for overal consistency**
+Facets was used for WES; Chr23 is ChrX, that’s how FACETS annotate their chromosome. It doesn’t analyse ChrY CNV unfortunately. We Installed the rock package (19th of Sep 2019) from Peter Diakumis' Github page.
+
+```{r}
+# devtools::install_github("pdiakumis/rock")
+library(rock)
+textSize <- 1
+```
+
+## Clean up sample names in CNV data
+
+### WES sample names
+
+```{r}
+
+cnvFileList <- list.files(wesPath_cnv)
+cnvName <- sapply(cnvFileList, function(x) unlist(strsplit(x, "--"))[[1]])
+# cnvName[!cnvName %in% ann6$SampleName] ## "yPMK295LTorg3-1" 
+ann6$SampleName[ann6$SampleName == "yPMK295LTorg3"] <- "yPMK295LTorg3-1"
+
+cnvName[!cnvName %in% ann6$SampleName]
+
+cnvNameData <- data.frame(cnvName)
+colnames(cnvNameData) <- "SampleName"
+## merge this to annotation file:
+cnvAnnotWES <- merge(ann6, cnvNameData, by = "SampleName")
+rownames(cnvAnnotWES) <- cnvAnnotWES$UniqueIDs
+```
+
+
+### WGS sample names
+```{r}
+
+cnvFileListg <- list.files(wgsPath_cnv)
+cnvName <- gsub("_ascat.genes.known.txt", "", cnvFileListg)
+
+cnvName <- sapply(cnvName, function(x){
+  gsub("^.{7}", "", x)
+})
+
+# cnvName[!cnvName %in% ann6$SampleName]  # "yPDB516_LT1_S1"      "yPDB516_LT2_S2" 
+
+ann6$SampleName[ann6$SampleName == "PRJ180675_yPDB516-LT1_S1"] <- "yPDB516_LT1_S1"
+ann6$SampleName[ann6$SampleName == "PRJ180676_yPDB516-LT2_S2"] <- "yPDB516_LT2_S2"
+
+cnvName[!cnvName %in% ann6$SampleName]
+# cnvName[cnvName == "SSF997COTORG10"] <- "SSF997COTORG10-5"
+# cnvName[cnvName == "SSF997LTOrg6"] <- "SSF997LTOrg6-3"
+
+cnvNameData <- data.frame(cnvName)
+colnames(cnvNameData) <- "SampleName"
+## merge this to annotation file:
+cnvAnnotWGS <- merge(ann6, cnvNameData, by = "SampleName")
+rownames(cnvAnnotWGS) <- cnvAnnotWGS$UniqueIDs
+```
+
+```{r}
+## 89 samples
+# WES WGS 
+#  53  36 
+cnvAnnot <- rbind(cnvAnnotWES, cnvAnnotWGS)
+
+write.table(
+  cnvAnnot,
+  paste0(outPath, "CNV_SamplesAnnotation.txt"),
+  row.names = T,
+  sep = "\t"
+)
+
+```
+
+
+## Piano plots
+### WES piano plot
+Generate piano plots for loss and gains in WES data. The functions are based on the rock package. This geneartes a multi-page PDF of piano plots. Note that for a couple of samples, there was no CNV, and this is more likely due to low quality of the samples. This reproduces some of the plots in Suppl Figure 2a. 
+```{r piano plot for WES, fig.height = 3, fig.width = 10, cache = T}
+cnvFileList <- list.files(paste0(wesPath, "../CNV/"))
+
+textSize <- 1.2
+
+pdf(paste0(figPath, "CNV_WES_ChrLocation.pdf"),
+  height = 2.5,
+  width = 10)
+
+for(f in 1:length(cnvFileList)){
+  
+  currentSample <- unlist(strsplit(cnvFileList[f], "--"))[1]
+  currentUniqueID <- as.character(cnvAnnotWES$UniqueIDs[cnvAnnotWES$SampleName == currentSample])
+  
+  currentFile <- paste0(wesPath_cnv, cnvFileList[f], "/", cnvFileList[f], ".clonal.WGS.tsv")
+
+  cn <- prep_facets_seg(currentFile)
+  cn <- list(cn)
+  names(cn) <- currentUniqueID
+  
+  p <- plot_piano(cnv_list = cn,
+    seg.col = c(brewer.pal(10, "Paired")[c(3, 9, 10, 2)])) +
+    ylab("Total Copy Number") +
+    xlab("Position") +
+    theme(strip.text = element_text(size = rel(textSize), face = "bold"), 
+      axis.title = element_text(size = rel(textSize), face = "bold"))
+  plot(p)
+  
+}
+dev.off()
+
+```
+
+
+### WGS piano plot
+There is no function for ASCAT in the rock package, so I have modified the original rock's code to generate same plots for WGS.
+
+#### define prep_ascat_seg function
+```{r}
+prep_ascat_seg <- function (ascat){
+  stopifnot(file.exists(ascat))
+  cnv <- readr::read_tsv(ascat, col_types = "ccciidccicccdiii") %>%
+    dplyr::select(.data$Chr,
+      .data$Gene_start,
+      .data$Gene_end,
+      .data$Copynumber) %>%
+    dplyr::rename(
+      tot_cn = .data$Copynumber, 
+      start = .data$Gene_start, 
+      end = .data$Gene_end, 
+      chrom = .data$Chr)
+    # dplyr::filter(.data$Chr != "MT") %>%  ## we do not have MT 
+    # dplyr::mutate(Chr = dplyr::case_when(.data$Chr == "23" ~ "X", TRUE ~ .data$Chr))
+  structure(list(cnv = cnv), class = "cnv")
+}
+```
+
+This geneartes a multi-page PDF of piano plots. Note that for a couple of samples, there was no CNV, and this is more likely due to low quality of the samples. This reproduces some of the plots in Suppl Figure 2a. 
+```{r piano plot for WGS, fig.height = 3, fig.width = 10, cache = T}
+
+cnvFileListg <- list.files(wgsPath_cnv)
+
+pdf(
+  paste0(figPath, "CNV_WGS_ChrLocation_updatedNames.pdf"),
+  height = 2.5,
+  width = 10
+)
+for(f in 1:length(cnvFileListg)){
+  
+  currentSample <- cnvFileListg[f]
+  currentSample <- gsub("_ascat.genes.known.txt", "", currentSample)
+  currentSample <- gsub("^.{7}", "", currentSample)
+  
+  currentUniqueID <- as.character(cnvAnnotWGS$UniqueIDs[cnvAnnotWGS$SampleName == currentSample])
+  
+  currentFile   <- paste0(wgsPath_cnv, cnvFileListg[f])
+  
+  cn <- prep_ascat_seg(currentFile)
+  cn <- list(cn)
+  names(cn) <- currentUniqueID
+  
+  p <- plot_piano(cnv_list = cn,
+    seg.col = c(brewer.pal(10, "Paired")[c(3, 9, 10, 2)])) +
+    ylab("Total Copy Number") +
+    xlab("Position") +
+    theme(strip.text = element_text(size = rel(textSize), face = "bold"), 
+      axis.title = element_text(size = rel(textSize), face = "bold"))
+  plot(p)
+}
+dev.off()
+  
+```
+
+
+## Circos plot
+### WES circos plot
+The PATH here is different from the PATH in RStudio: look at Sys.getenv("PATH")
+```{r circos plots for WES, warning = F, message = F}
+cnvFileList <- list.files(wesPath_cnv)
+for(f in 1:length(cnvFileList)){
+  
+  currentSample <- unlist(strsplit(cnvFileList[f], "--"))[1]
+  currentUniqueID <- cnvAnnotWES$UniqueIDs[cnvAnnotWES$SampleName == currentSample]
+  
+  currentFile <- paste0(wesPath_cnv, cnvFileList[f], "/", cnvFileList[f], ".clonal.WGS.tsv")
+  
+    circos_prep(outdir = paste0(figPath, "circos_CNV/WES/circos_", currentUniqueID), cnv = currentFile)
+  # plot_circos(outdir = "circos", name = currentUniqueID)
+    
+  # docker needs absolute path
+    system(paste0("docker container run --rm -v $(pwd)/../figure/Genomics/circos_CNV/WES/circos_", currentUniqueID,  ":/data pdiakumis/circos:0.69-6 -conf /data/circos.conf -outputdir /data"))
+    
+}
+
+```
+
+### WGS circos plot
+```{r, warning = F, message = F}
+
+# source(paste0(scriptPath, "rock_modified.R"))
+
+for(f in 1:length(cnvFileListg)){
+  currentSample <- cnvFileListg[f]
+  currentSample <- gsub("_ascat.genes.known.txt", "", currentSample)
+  currentSample <- gsub("^.{7}", "", currentSample)
+  
+  currentUniqueID <- cnvAnnotWGS$UniqueIDs[cnvAnnotWGS$SampleName == currentSample]
+  
+  currentFile   <- paste0(wgsPath_cnv, cnvFileListg[f])
+  # currentFile   <- paste0(wgsPath, "../Hollande_somatic_variants/CNV/", cnvFileListg[f])
+  # cn <- prep_ascat_seg(currentFile)
+  # cs <- prep_cnv_circos(currentFile)
+    
+    circos_prep(outdir = paste0(figPath, "circos_CNV/WGS/circos_", currentUniqueID), cnv = currentFile)
+  # plot_circos(outdir = "circos", name = currentUniqueID)
+  
+    system(paste0("docker container run --rm -v $(pwd)/../figure/Genomics/circos_CNV/WGS/circos_", currentUniqueID,  ":/data pdiakumis/circos:0.69-6 -conf /data/circos.conf -outputdir /data -nosvg"))
+  
+}
+```
+
+# CNV across sample analyses
+
+Code form Martin Morgan, shared here https://support.bioconductor.org/p/67118/
+
+In geneRanges, 'db' is a so-called OrganismDb, containing information about genes (e.g., ENTREZ or SYMBOL gene ids) as well as gene models (e.g., TXSTART, TXEND). The Homo.sapiens OrangismDb is based on the org.Hs.eg.db gene annotation package, and the TxDb.Hsapiens.UCSC.hg19.knownGene package; it is relatively easy to make a custom package if you have different annotations.
+```{r cnv_start, warning = F, message = F}
+library(GenomicRanges)
+# browseVignettes("GenomicRanges")
+library(Homo.sapiens)
+
+geneRanges <- 
+    function(db, column="ENTREZID")
+{
+    g <- genes(db, columns=column)
+    col <- mcols(g)[[column]]
+    genes <- granges(g)[rep(seq_along(g), elementNROWS(col))]
+    mcols(genes)[[column]] <- as.character(unlist(col))
+    genes
+}
+
+splitColumnByOverlap <-
+    function(query, subject, column="ENTREZID", ...)
+{
+    olaps <- findOverlaps(query, subject, ...)
+    f1 <- factor(subjectHits(olaps),
+                 levels=seq_len(subjectLength(olaps)))
+    splitAsList(mcols(query)[[column]][queryHits(olaps)], f1)
+}
+
+```
+
+
+## WES - Across samples
+
+```{r}
+gns <- geneRanges(Homo.sapiens, column = "SYMBOL")
+gns2 <- data.frame(gns)
+gns2$seqnames  <- as.character(gns2$seqnames)
+
+## Chr 23 is the same as Chr X
+gns2$seqnames [gns2$seqnames == "chrX"] <- "chr23"
+
+## remove ChrY:
+gns2 <- gns2[!gns2$seqnames == "chrY", ]
+
+gns <-
+  makeGRangesFromDataFrame(
+  gns2,
+  keep.extra.columns = T,
+  seqnames.field = "seqnames",
+  start.field = "start",
+  end.field = "end"
+  )
+
+```
+
+In the output, cf, tcn, lcn are the initial estimates of cellular fraction,
+total and minor copy number estimates, and cf.em, tcn.em, lcn.em are the
+estimates by the mixture model optimized using the EM-algorithm. cf is used as
+initial values for the EM algorithm. For diploid normal segments (total copy=2,
+minor copy=1), we report cellular fraction as 1 (100\% normal). The logOR data
+for a segment are summarized using the square of expected log-odds-ratio
+(mafR column).
+
+We take into account sample genders. As FACETS does not give info for chromosome Y, we need to make sure that we do not call the genes on X chr for male as deletion...
+```{r}
+
+cnvFileList <- list.files(wesPath_cnv)
+
+cnvData <- data.frame(Symbol = character())
+
+for(f in 1:length(cnvFileList)){
+  
+  currentSample <- unlist(strsplit(cnvFileList[f], "--"))[1]
+  currentUniqueID <- cnvAnnotWES$UniqueIDs[cnvAnnotWES$SampleName == currentSample]
+  currentGender <- cnvAnnotWES$Gender[cnvAnnotWES$SampleName == currentSample]
+  
+  currentFile <- paste0(wesPath, "../CNV/", cnvFileList[f], "/", cnvFileList[f], ".clonal.WGS.tsv")
+  
+  df  <- read.delim(currentFile)
+  
+  # print(paste(currentUniqueID, "-----> #segments =", nrow(df), "; min size =", min(df$end - df$start), "; max size =", max(df$end - df$start)))
+  
+  df$chrom <- paste0("chr", df$chrom)
+  
+  cnv <-
+  makeGRangesFromDataFrame(
+  df,
+  keep.extra.columns = T,
+  seqnames.field = "chrom",
+  start.field = "start",
+  end.field = "end"
+  )
+  
+  symInCnv <- splitColumnByOverlap(gns, cnv, column = "SYMBOL")
+
+  cnv$gg <- symInCnv
+  
+  gdata <- data.frame(cnv$gg)
+  cnvDat <- data.frame(cnv)
+  
+  ddgene <- merge(cnvDat, gdata, by.x = "seg", by.y = "group")
+  
+  ddgene <- ddgene[!is.na(ddgene$value), ]
+  
+  
+  ##---- If I want to annotate the duplicated genes separately
+  dupGenes <- as.character(ddgene$value[duplicated(ddgene$value)])
+
+  # print(paste(currentUniqueID, "#DuplicatedGenes =", length(dupGenes)))
+  
+  ddgene$dupGenes <- "No"
+  ddgene$dupGenes[ddgene$value %in% dupGenes] <- "Yes"
+  ddgene <- ddgene[!duplicated(ddgene$value), ]
+  
+  # ddgene2 <- ddgene[, c("value", "tcn.em", "lcn.em", "dupGenes")]
+
+  ddgene2 <- ddgene
+  ##---- If I want to take the median of the CNV for duplicated genes:
+  # ddgene2 <- ddgene[, c("value", "tcn.em", "lcn.em")] %>% 
+  #   group_by(value) %>%
+  #   summarise_all(funs(median)) %>% 
+  #   data.frame()
+  
+  ddgene2$CNV <- NA
+  ddgene2$CNV[ddgene2$tcn.em > 5 ] <- "High Gain"
+  
+  ddgene2$CNV[ddgene2$tcn.em > 2 & 
+      ddgene2$tcn.em <= 5] <- "Gain"
+  
+  ddgene2$CNV[ddgene2$tcn.em == 1 ] <- "Deletion"
+  
+  ddgene2$CNV[ddgene2$tcn.em == 0 ] <- "Deep Deletion"
+  
+  ddgene2$CNV[ddgene2$tcn.em == 2 & 
+      ddgene2$lcn.em == 0 ] <- "CNN LOH"
+ 
+  ##----- Consider adding this later: 
+  # ddgene2$CNV[ddgene2$tcn.em > 2 & 
+  #     ddgene2$lcn.em == 0 ] <- "Gain LOH"
+  
+  ddgene2$CNV[ddgene2$tcn.em == 2 & 
+      ddgene2$lcn.em == 1 ] <- "Het"
+  
+  ddgene2$CNV[ddgene2$dupGenes == "Yes" ] <- "Other"
+  
+  if(!is.na(currentGender) & currentGender == "Male"){
+    ddgene2$CNV[ddgene2$seqnames == "chr23" & 
+        ddgene2$tcn.em == 1] <- "Het"
+    
+    ddgene2$CNV[ddgene2$seqnames == "chr23" & 
+        ddgene2$tcn.em == 0] <- "Deletion"
+  }
+  
+  ddgene2 <- ddgene2[, c("value", "CNV")]
+  
+  colnames(ddgene2) <- c("Symbol", currentUniqueID)
+  
+  cnvData <- merge(cnvData, ddgene2, by = "Symbol", all = T)
+}
+
+write.table(
+  cnvData,
+  paste0(outPath, "CNV_WES_totalCN_groups_other_male.txt"),
+  sep = "\t",
+  row.names = F
+)
+
+table(as.matrix(cnvData[, 2:ncol(cnvData)]))
+```
+
+```{r}
+# cnvData <- read.table(paste0(outPath, "CNV_WES_totalCN_groups_other_male_.txt"), header = T, sep = "\t", stringsAsFactors = F)
+
+rnames  <- as.character(cnvData$Symbol)
+cnvData <- as.matrix(cnvData[, 2:ncol(cnvData)])
+rownames(cnvData) <- rnames
+head(cnvData, 2)
+
+cnvData[cnvData == "Het"] <- NA
+```
+
+### Extract Total CNV estimates
+```{r}
+
+cnvFileList <- list.files(wesPath_cnv)
+
+cnvData0 <- data.frame(Symbol = character())
+
+for(f in 1:length(cnvFileList)){
+  
+  currentSample <- unlist(strsplit(cnvFileList[f], "--"))[1]
+  currentUniqueID <- cnvAnnotWES$UniqueIDs[cnvAnnotWES$SampleName == currentSample]
+  currentGender <- cnvAnnotWES$Gender[cnvAnnotWES$SampleName == currentSample]
+  
+  currentFile <- paste0(wesPath, "../CNV/", cnvFileList[f], "/", cnvFileList[f], ".clonal.WGS.tsv")
+  
+  df  <- read.delim(currentFile)
+  
+  # print(paste(currentUniqueID, "-----> #segments =", nrow(df), "; min size =", min(df$end - df$start), "; max size =", max(df$end - df$start)))
+  
+  df$chrom <- paste0("chr", df$chrom)
+  
+  cnv <-
+  makeGRangesFromDataFrame(
+  df,
+  keep.extra.columns = T,
+  seqnames.field = "chrom",
+  start.field = "start",
+  end.field = "end"
+  )
+  
+  symInCnv <- splitColumnByOverlap(gns, cnv, column = "SYMBOL")
+
+  cnv$gg <- symInCnv
+  
+  gdata <- data.frame(cnv$gg)
+  cnvDat <- data.frame(cnv)
+  
+  ddgene <- merge(cnvDat, gdata, by.x = "seg", by.y = "group")
+  
+  ddgene <- ddgene[!is.na(ddgene$value), ]
+  
+  
+  ##---- If I want to annotate the duplicated genes separately
+  dupGenes <- as.character(ddgene$value[duplicated(ddgene$value)])
+
+  # print(paste(currentUniqueID, "#DuplicatedGenes =", length(dupGenes)))
+  
+  ddgene$dupGenes <- "No"
+  ddgene$dupGenes[ddgene$value %in% dupGenes] <- "Yes"
+  ddgene <- ddgene[!duplicated(ddgene$value), ]
+  
+  # ddgene2 <- ddgene[, c("value", "tcn.em", "lcn.em", "dupGenes")]
+
+  ddgene2 <- ddgene
+
+  ddgene2 <- ddgene2[, c("value", "tcn.em")]
+  
+  colnames(ddgene2) <- c("Symbol", currentUniqueID)
+  
+  cnvData0 <- merge(cnvData0, ddgene2, by = "Symbol", all = T)
+}
+
+
+write.table(
+  cnvData0,
+  paste0(outPath, "CNV_WES_totalCN_tcn_em.txt"),
+  sep = "\t",
+  row.names = F
+)
+
+# cnvData0 <-
+#   read.table(
+#     paste0(outPath, "CNV_WES_totalCN_tcn_em.txt"),
+#     header = T,
+#     sep = "\t",
+#     check.names = F
+#   )
+```
+
+## WGS - Across samples
+In some of the samples, there are situations where the segment size is 1 (or basically zero). These samples include: PCC002-CoT-org-2-1, PSH095-CoT-org/LT/LT-org, SHB443-LT2-Org-5-0 and VJR275-LT. So we remove segments < 1000 bp mostly to get rid of these cases:
+```{r}
+
+cnvFileListg <- list.files(wgsPath_cnv)
+
+cnvDatag <- data.frame(Symbol = character())
+
+for(f in 1:length(cnvFileListg)){
+  
+    currentSample <- cnvFileListg[f]
+  currentSample <- gsub("_ascat.genes.known.txt", "", currentSample)
+  currentSample <- gsub("^.{7}", "", currentSample)
+    
+  currentUniqueID <- cnvAnnotWGS$UniqueIDs[cnvAnnotWGS$SampleName == currentSample]
+  
+  currentGender <- cnvAnnotWGS$Gender[cnvAnnotWGS$SampleName == currentSample]
+
+  currentFile   <- paste0(wgsPath_cnv, cnvFileListg[f])
+  
+  dfg  <- read.delim(currentFile)
+  ## remove segments smaller than 1000 bp: 
+  
+  dfg <- dfg[!dfg$SegmentSize < 1000, ]
+  
+      # print(paste(currentUniqueID, "-----> #segments =", nrow(dfg), "; min size =", min(dfg$SegmentSize), "; max size =", max(dfg$SegmentSize)))
+      
+
+  dupGenes <- unique(as.character(dfg$Symbol[duplicated(dfg$Symbol)]))
+  
+  # print(paste(currentUniqueID, "#DuplicatedGenes =", length(dupGenes)))
+  
+ 
+  
+  # dfg <- dfg[, c("Symbol", "ASCAT_call")]
+
+  ## If I want to remove duplicates:
+  # dfg <- dfg[!duplicated(dfg$Symbol), ]
+  
+  ## If I want to annotate the duplicated samples separately:
+  dfg$dupGenes <- "No"
+  dfg$dupGenes[dfg$Symbol %in% dupGenes] <- "Yes"
+  dfg <- dfg[!duplicated(dfg$Symbol), ]
+  
+  # colnames(dfg)[2] <- "CNV"
+  
+  dfg$ASCAT_call <- as.character(dfg$ASCAT_call)
+  dfg$ASCAT_call [dfg$Copynumber == 0] <- "Deep Deletion"
+  
+  dfg$CNV[dfg$ASCAT_call == "Deep Deletion" ] <- "Deep Deletion"
+  dfg$CNV[dfg$ASCAT_call == "Del" ] <- "Deletion"
+  dfg$CNV[dfg$ASCAT_call == "HighGain" ] <- "High Gain"
+  dfg$CNV[dfg$ASCAT_call == "Gain" ] <- "Gain"
+  dfg$CNV[dfg$ASCAT_call == "cnLOH" ] <- "CNN LOH"
+  dfg$CNV[dfg$ASCAT_call == "Het" ] <- "Het"
+  
+  dfg$CNV[dfg$dupGenes == "Yes" ] <- "Other"
+  
+  if(!is.na(currentGender) & currentGender == "Male"){
+    dfg$CNV[dfg$Chr == "X" & 
+        dfg$Copynumber == 1] <- "Het"
+    
+    dfg$CNV[dfg$Chr == "Y" & 
+        dfg$Copynumber == 1] <- "Het"
+    
+    dfg$CNV[dfg$Chr == "X" & 
+        dfg$Copynumber == 0] <- "Deletion"
+  }
+  
+  dfg <- dfg[, c("Symbol", "CNV")]
+  
+  ## remove dupGene column
+  # dfg <- dfg[, !grepl("dupGenes", colnames(dfg))]
+  
+  colnames(dfg) <- c("Symbol", currentUniqueID)
+  
+  cnvDatag <- merge(cnvDatag, dfg, by = "Symbol", all = T)
+}
+
+write.table(
+  cnvDatag,
+  paste0(outPath, "CNV_WGS_totalCN_groups_other_male.txt"),
+  sep = "\t",
+  row.names = F
+)
+
+table(as.matrix(cnvDatag[, 2:ncol(cnvDatag)]))
+```
+
+```{r}
+# cnvDatag <-
+#   read.table(
+#     paste0(outPath, "CNV_WGS_totalCN_groups_other_male.txt"),
+#     header = T,
+#     sep = "\t"
+#   )
+
+rnames  <- as.character(cnvDatag$Symbol)
+cnvDatag <- as.matrix(cnvDatag[, 2:ncol(cnvDatag)])
+rownames(cnvDatag) <- rnames
+head(cnvDatag, 2)
+
+cnvDatag[cnvDatag == "Het"] <- NA
+```
+
+
+## Merge CNV from WES and WGS
+Note that yPPF166_LT_Tum has been run using WGS and WES data. The WGS data does not give any mutations for this, while WES data has mutations. For the CNV data of this sample, the WES does not have any info but the WGS has!!
+
+```{r}
+# colnames(cnvData)[colnames(cnvData) == "yPPF166_LT_Tum"] <- "yPPF166_LT_WES_Tum"
+cnvAll <- merge(cnvData, cnvDatag, by = "row.names", all = T)
+rname <- cnvAll$Row.names
+
+cnvAll <- as.matrix(cnvAll[, 2:ncol(cnvAll)])
+rownames(cnvAll) <- rname
+
+write.table(
+  cnvAll,
+  paste0(outPath, "Suppl_Table_CNV_All_WGS_WES_groups_other_male.txt"),
+  sep = "\t",
+  row.names = T
+)
+
+```
+
+After removal of the low quality samples, we generate the Suppl Table 3 for the CNV data. We end up with 80/89 samples. 
+```{r}
+## remove low quality samples
+lowQual <- c(
+  "P002_CoT_Tum",
+  "P002_CoT1_Tum",
+  "P002_CoT_Tum_WES",
+  "P032_CoT1_Tum",
+  "P095_LT_Tum",
+  "P997_CoT_Rpt_Tum",
+  "P997_CoT_Tum",
+  # "yP166_LT_Tum",
+  "yP166_LT_Tum_WES",
+  "yP571_LT_Tum"
+)
+
+cnvAllFilt <- cnvAll[, !colnames(cnvAll)  %in% lowQual]
+
+# write.table(cnvAllFilt, paste0(outPath, "Paper_SupplTable_CNV_AllSamples.txt"), row.names = T, sep = "\t")
+```
+
+
+### Stat and Freq of CNVs
+
+Supp Figure 2b, left panel and right panel. 
+```{r}
+TumStat <- data.frame(table(as.matrix(cnvAll[, grepl("Tum", colnames(cnvAll))])))
+colnames(TumStat)[1] <- "CNV"
+
+TumStat %>%
+  filter(CNV != "Other") %>%
+  ggplot(., aes(x = reorder(CNV, -Freq), y = Freq, fill = CNV)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = brewer.pal(11, "Paired")[c(2, 4, 3, 9, 10)]) +
+  ggtitle("CNV across all tumour samples") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
+  
+ggsave(
+  filename = "Supp_Figure_2b_CNV_Freq_AllTumSamples.png",
+  device = "png",
+  path = figPath,
+  width = 4,
+  height = 3,
+  units = "in",
+  dpi = 400
+)
+
+
+OrgStat <- data.frame(table(as.matrix(cnvAll[, grepl("Org", colnames(cnvAll))])))
+colnames(OrgStat)[1] <- "CNV"
+
+OrgStat %>%
+  filter(CNV != "Other") %>%
+  ggplot(., aes(x = reorder(CNV, -Freq), y = Freq, fill = CNV)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = brewer.pal(11, "Paired")[c(2, 4, 3, 9, 10)]) +
+  ggtitle("CNV across all PDTOs") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(), axis.text.x = element_blank())
+
+ggsave(
+  filename = "Supp_Figure_2b_CNV_Freq_AllOrgSamples.png",
+  device = "png",
+  path = figPath,
+  width = 4,
+  height = 3,
+  units = "in",
+  dpi = 400
+)
+```
+
+
+
+
+
+
+# Generate annotation plot
+Suppl Figure 1.
+```{r}
+
+ann7 <- read.csv(paste0(dataPath,
+  "Annotation_allSamples_71rows_20200529.csv"),
+  stringsAsFactors = F
+  )
+
+
+ann7 <- ann7[order(ann7$PatientID), ]
+
+##---- Remove duplicated sample records as some samples have WES as well as WGS or they have repeats (Rpt)
+ann7 <- ann7[! grepl("WES", ann7$Samples) & !grepl("Rpt", ann7$Samples), ]
+
+# ann7$Tissue[ann7$Samples == "yPTM689_LT"] <- "LT"
+
+## ---- remove one duplicated samples
+# ann7 <- ann7[! ann7$Samples == "PCC002_CoT1", ] 
+ann7 <- ann7[! ann7$Samples == "yPTM689_LT_2016", ] 
+
+##-------- Add columns
+
+ann7$Matched_TumOrg_RNAseq <- as.character(ann7$Matched_TumOrg_RNAseq)
+ann7$Matched_TumOrg_Genomics <- as.character(ann7$Matched_TumOrg_Genomics)
+ann7$Matched_TumOrg_RNAseq_Genomics <- as.character(ann7$Matched_TumOrg_RNAseq_Genomics)
+ann7$Matched_RNAseqGenomics_Tum <- as.character(ann7$Matched_RNAseqGenomics_Tum)
+ann7$Matched_RNAseqGenomics_Org <- as.character(ann7$Matched_RNAseqGenomics_Org)
+
+ann7$Matched_TumOrg_RNAseq[! is.na(ann7$Matched_TumOrg_RNAseq)] <- "Tum.Org_RNAseq"
+ann7$Matched_TumOrg_Genomics[! is.na(ann7$Matched_TumOrg_Genomics)] <- "Tum.Org_Genomics"
+ann7$Matched_TumOrg_RNAseq_Genomics[! is.na(ann7$Matched_TumOrg_RNAseq_Genomics)] <- "Tum.Org_RNAseq.Genomics"
+ann7$Matched_RNAseqGenomics_Tum[! is.na(ann7$Matched_RNAseqGenomics_Tum)] <- "Tum_RNAseq.Genomics"
+ann7$Matched_RNAseqGenomics_Org[! is.na(ann7$Matched_RNAseqGenomics_Org)] <- "Org_RNAseq.Genomics"
+
+
+ann7$PatientID[ann7$PatientID == "yP166"] <- "P166"
+ann7$Response_Tum[ann7$PatientID == "yP610"] <- "PR"
+ann7$Treatment[ann7$PatientID == "yP610"] <- "FOLFOX + Bevacizumab"
+
+
+ann7$FOLFOXBase_PrePostOp_RNAseq[ann7$PatientID == "yP610"] <- "FOLFOX_PreOp"
+ann7$FOLFOXBase_PrePostOp[ann7$PatientID == "yP610"] <- "FOLFOX_PreOp"
+
+##------------------- Select samples:
+##--- all samples
+subSample <- as.character(ann7$PatientID)
+currentAnnot <- ann7
+
+
+##----- for all samples
+
+colfunc <-
+      colorRampPalette(c(
+        brewer.pal(11, 'BrBG')[-c(1, 6, 11)],
+        brewer.pal(11, 'PRGn')[-c(1, 6, 11)],
+        brewer.pal(11, 'RdYlBu')
+      ))
+ 
+## CoT of the P166 is naive:
+# ann_consolidated$PatientID[ann_consolidated$PatientID == "yP166"] <- "P166"
+
+
+patientCol  <- colfunc(length(unique(ann7$PatientID)))
+names(patientCol) <-
+  unique(as.character(ann7$PatientID))[order(unique(as.character(ann7$PatientID)))]
+
+patientCol <- patientCol[names(patientCol)  %in% ann7$PatientID]
+
+# names(patientCol)[names(patientCol) == "yP166"] <- "P166"
+
+
+## take colours for selected samples
+patientCol <- patientCol[names(patientCol)  %in% subSample]
+
+##--------- For chemo/Tissue and matched
+# colChemo  <- brewer.pal(8, "Blues")[c(3, 7, 5)]
+# colTissue <- c("gray20", "gray85")
+
+# colMatched <- brewer.pal(8, "Set2")[3]
+
+colTreat <- brewer.pal(9, "Oranges")[c(2, 4, 6, 8, 9)]
+
+names(colTreat) <-
+  c(
+    "CAPOX",
+    "FOLFOX",
+    "FOLFOX + Bevacizumab",
+    "FOLFIRI + Cetuximab",
+    "FOLFOXIRI + Bevacizumab"
+  )
+
+
+colFF <- brewer.pal(8, "Reds")[c(4, 8)]
+
+names(colFF) <-
+  c(
+    "FOLFOX_PreOp",
+    "FOLFOX_PostOp"
+  )
+
+
+
+respCol <- c("pink", "pink3", "darkred")
+names(respCol) <- c("Sensitive", "Semi-sensitive", "Resistant")
+
+respTumCol <- c(brewer.pal(11, "BrBG")[c(11, 9, 7, 5)])
+names(respTumCol) <- c("PD", "PR", "CR", "Relapse")
+
+# respTumCol <- c("pink", "pink3", "darkred", "darkgoldenrod")
+# names(respTumCol) <- c("CR", "PR", "PD", "Relapse")
+
+genderCol <- c("aquamarine", "aquamarine4")
+names(genderCol) <- c("Male", "Female")
+
+chemoCol  <- brewer.pal(8, "Blues")[c(3, 7, 5)]
+names(chemoCol) <- c("Naive", "Distant", "Treated")
+
+tissueCol <- c("gray20", "gray85")
+names(tissueCol) <- c("LT", "CoT")
+
+siteCol <- brewer.pal(9, "Greens")[c(3, 7, 5)]
+names(siteCol) <- names(table(ann7$Site))
+
+synchMetachCol  <- c(brewer.pal(8, "Set2")[3], brewer.pal(8, "Set3")[3])
+names(synchMetachCol) <- names(table(ann7$SynchMetach))
+
+SampleTypeCol <- c("dark blue","light blue" )
+names(SampleTypeCol) <- c("Tum", "Org")
+ 
+```
+
+
+```{r}
+##---- patients
+currentAnnot$PatientID <- as.character(currentAnnot$PatientID)
+nPat <- length(table(currentAnnot$PatientID))
+
+HtPat <-
+  Heatmap(
+    currentAnnot$PatientID,
+    cluster_rows = FALSE,
+    col =  patientCol,
+    name = paste0('Patients\n(n = ', nPat, ')'),
+    na_col = brewer.pal(9, "Pastel1")[9],
+    row_split = currentAnnot$PatientID,
+    row_title = NULL,
+    row_gap = unit(0, "mm"),  
+    border = TRUE,
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 2,
+      title_gp = gpar(fontsize = 12),
+      title = "Patients"
+    )
+  )
+
+
+
+##------ Gender
+# n <- sum(table(currentAnnot$Gender))
+
+HtGender <-
+  Heatmap(
+    currentAnnot$Gender,
+    cluster_rows = FALSE,
+    col = genderCol,
+    name = paste0('Gender\n(F=21, M=41)'),
+    row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+    show_heatmap_legend = T,
+    na_col = brewer.pal(9, "Pastel1")[9],
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 2,
+      title_gp = gpar(fontsize = 12),
+      title = "Gender"
+    )
+  )
+
+
+##---- Tissue
+n <- sum(table(currentAnnot$Tissue))
+
+HtTissue <-
+  Heatmap(
+    currentAnnot$Tissue,
+    cluster_rows = FALSE,
+    col = tissueCol,
+    name = paste0('Tissue\n(n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+    na_col = brewer.pal(9, "Pastel1")[9],
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 2,
+      title_gp = gpar(fontsize = 12),
+      title = "Tissue"
+    )
+  )
+
+
+##---- Sites
+# colSite <- brewer.pal(9, "Greens")[c(3, 7, 5)]
+# names(colSite) <- names(table(ann7$Site))
+
+HtSite <-
+  Heatmap(
+  currentAnnot$Site,
+  cluster_rows = FALSE,
+  col = siteCol,
+  name = "Primary site\n(L=33, R=14, Rec=15)",
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  na_col = brewer.pal(9, "Pastel1")[9],
+  heatmap_legend_param = list(
+  color_bar = "discrete" ,
+  ncol = 2,
+  title_gp = gpar(fontsize = 12),
+    title = "Primary site"
+  )
+)
+
+##----- SynchMetach
+# colSyncMetach <- c(brewer.pal(8, "Set2")[3], brewer.pal(8, "Set3")[3])
+# names(colSyncMetach) <- names(table(ann7$SynchMetach))
+# n <- sum(table(currentAnnot$SynchMetach))
+
+HtSynchMetach <-
+  Heatmap(
+  currentAnnot$SynchMetach,
+  cluster_rows = FALSE,
+  col = synchMetachCol,
+  name = "Synch vs Metach\n(S=51, M=11)",
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  na_col = brewer.pal(9, "Pastel1")[9],
+  heatmap_legend_param = list(
+  color_bar = "discrete" ,
+  ncol = 2,
+  title_gp = gpar(fontsize = 12), 
+    title = "Synch vs Metach"
+  )
+)
+
+##---- Chemo
+# nChemo <- sum(table(currentAnnot$ChemoStatus))
+
+HtChemo <-
+  Heatmap(
+  currentAnnot$ChemoStatus,
+  cluster_rows = FALSE,
+  col = chemoCol ,
+  name = "Chemo status \n (N=36, T=20, D=6)",
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  na_col = brewer.pal(9, "Pastel1")[9],
+  heatmap_legend_param = list(
+  color_bar = "discrete" ,
+  ncol = 2,
+  title_gp = gpar(fontsize = 12),
+    title = "Chemo status"
+  )
+)
+
+
+##----- Treatment
+
+nTreat <- sum(table(currentAnnot$Treatment))
+
+HtTreat <-
+  Heatmap(
+    currentAnnot$Treatment,
+    cluster_rows = FALSE,
+    col = colTreat ,
+    name = paste0('Treatment\n(n = ', nTreat, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+    na_col = brewer.pal(9, "Pastel1")[9],
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 1,
+      title_gp = gpar(fontsize = 12),
+      title = "Treatments"
+    )
+  )
+
+##----- FOLFOX
+# 
+# colnames(currentAnnot)[currentAnnot]
+# 
+# nTreat <- sum(table(currentAnnot$FOLFOXBase_PrePostOp_RNAseq))
+# 
+# HtTreat <-
+#   Heatmap(
+#   currentAnnot$Treatment,
+#   cluster_rows = FALSE,
+#   col = colTreat ,
+#   name = paste0('Treatment\n(n = ', nTreat, ')'),
+#   na_col = brewer.pal(9, "Pastel1")[9],
+#   heatmap_legend_param = list(
+#   color_bar = "discrete" ,
+#   ncol = 1,
+#   title_gp = gpar(fontsize = 12)
+#   )
+# )
+
+##----- Org response to FF
+
+n <- sum(table(currentAnnot$Response_Org))
+
+HtResponse <-
+  Heatmap(
+    currentAnnot$Response_Org,
+    cluster_rows = FALSE,
+    col = respCol,
+    # column_title = "Org response\nto FOLFOX",
+    # column_names_rot = 180,
+    name = paste0('Organoid response\n (n = ', n, ")"),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+    show_heatmap_legend = T,
+    na_col = brewer.pal(9, "Pastel1")[9],
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 2,
+      title_gp = gpar(fontsize = 12),
+      title =  "Org response\nto FOLFOX"
+    )
+  )
+
+
+##------ Patients' response to FF
+
+n <- sum(table(currentAnnot$Response_Tum))
+
+HtResponseTum <-
+  Heatmap(
+    currentAnnot$Response_Tum,
+    cluster_rows = FALSE,
+    col = respTumCol,
+    name = paste0("Patients' response\n(n = ", n, ")"),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+    show_heatmap_legend = T,
+    na_col = brewer.pal(9, "Pastel1")[9],
+    heatmap_legend_param = list(
+      color_bar = "discrete" ,
+      ncol = 2,
+      title_gp = gpar(fontsize = 12),
+      title =  "Patients' response\nto treatments"
+    )
+  )
+
+
+##---- Matched samples
+n <- sum(table(currentAnnot$Matched_TumOrg_RNAseq))
+
+HtTumOrgRNA <-
+  Heatmap(
+  currentAnnot$Matched_TumOrg_RNAseq,
+  cluster_rows = FALSE,
+  col = list('Tum.Org_RNAseq' = 'mediumorchid4'),
+  name = paste0('Tum-Org RNA-seq\n(n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  show_heatmap_legend = F, 
+    na_col = brewer.pal(9, "Pastel1")[9]
+  )
+
+
+n <- sum(table(currentAnnot$Matched_TumOrg_Genomics))
+
+HtTumOrgDNA <-
+  Heatmap(
+  currentAnnot$Matched_TumOrg_Genomics,
+  cluster_rows = FALSE,
+  col = list('Tum.Org_Genomics' = 'mediumorchid4'),
+  name = paste0('Tum-Org Genomics\n(n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  show_heatmap_legend = F, 
+    na_col = brewer.pal(9, "Pastel1")[9]
+  )
+
+
+n <- sum(table(currentAnnot$Matched_TumOrg_RNAseq_Genomics))
+
+HtTumOrgRNA.DNA <-
+  Heatmap(
+  currentAnnot$Matched_TumOrg_RNAseq_Genomics,
+  cluster_rows = FALSE,
+  col = list('Tum.Org_RNAseq.Genomics' = 'mediumorchid4'),
+  name = paste0('Tum-Org \nRNA-seq & Genomics (n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  show_heatmap_legend = F, 
+    na_col = brewer.pal(9, "Pastel1")[9]
+  )
+
+
+n <- sum(table(currentAnnot$Matched_RNAseqGenomics_Tum))
+
+HtRNA.DNA.Tum <-
+  Heatmap(
+  currentAnnot$Matched_RNAseqGenomics_Tum,
+  cluster_rows = FALSE,
+  col = list('Tum_RNAseq.Genomics' = 'turquoise4'),
+  name = paste0('RNA-seq & Genomics \n for Tum (n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  show_heatmap_legend = F, 
+    na_col = brewer.pal(9, "Pastel1")[9]
+  )
+
+
+n <- sum(table(currentAnnot$Matched_RNAseqGenomics_Org))
+
+HtRNA.DNA.Org <-
+  Heatmap(
+  currentAnnot$Matched_RNAseqGenomics_Org,
+  cluster_rows = FALSE,
+  col = list('Org_RNAseq.Genomics' = 'turquoise4'),
+  name = paste0('RNA-seq & Genomics \n for Org (n = ', n, ')'),
+        row_split = currentAnnot$PatientID,
+    row_title = NULL,
+        row_gap = unit(0, "mm"),  
+    border = TRUE,
+  show_heatmap_legend = F, 
+    na_col = brewer.pal(9, "Pastel1")[9]
+  )
+
+
+```
+
+
+```{r}
+
+png(
+  paste0(figPath, 'Supp_Figure1_Heatmap_SampleAnnot.png'),
+  width = 10,
+  height = 8.5,
+  units = "in",
+  res = 500
+)
+draw(
+  HtPat +
+    HtGender +
+    HtTissue + 
+    HtSite +
+    HtSynchMetach +
+    HtChemo +
+    HtTreat + 
+    HtResponseTum + 
+    HtResponse + 
+    HtTumOrgRNA +
+    HtTumOrgDNA +
+    HtTumOrgRNA.DNA +
+    HtRNA.DNA.Tum +
+    HtRNA.DNA.Org +
+    HtPat
+)
+dev.off()
+```
+
+
+
+

@@ -14,4 +14,9 @@ report/DEanalysis_Tum_FF_files/
 output/RNAseq/Organoid/DE_Stats_List_AllComparisons_OrgFF_2020June.RDS
 output/RNAseq/Tumour/DE_Stats_List_TumFF_AllComparisons.RDS
 
-
+data/Genomics/WES/
+data/Genomics/WGS/
+figure/Genomics/circos_CNV/
+output/Genomics/CNV_WES_totalCN_groups_other_male.txt
+output/Genomics/CNV_WES_totalCN_tcn_em.txt
+output/Genomics/CNV_WGS_totalCN_groups_other_male.txt
