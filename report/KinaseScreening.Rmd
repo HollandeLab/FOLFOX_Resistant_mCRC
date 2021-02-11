@@ -1,0 +1,1158 @@
+---
+title: 'Visualise PDTO kinase screening data'
+author: 
+  - name: 'Momeneh (Sepideh) Foroutan'
+    affiliation: 'Prof Hollande Lab'
+    url: https://www.monash.edu/discovery-institute/huntington-lab
+date: '2019-06-10'
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 6
+    gallery: TRUE
+    highlight: tango
+    lightbox: TRUE
+    self_contained: TRUE
+    thumbnails: FALSE
+    number_sections: TRUE	
+    toc_depth: 4
+    use_bookdown: TRUE
+    code_folding: hide
+  html_document2:
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options: 
+  chunk_output_type: inline
+---
+
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+
+# Set up and overview
+This document contains code for reproducing the results of the drug screening data on PDTOs, reported in [Behrenbruch and Foroutan et al manuscript](https://www.biorxiv.org/content/10.1101/2021.02.04.429849v1).
+We generate heatmaps in Figure 6a.
+```{r setup, include=FALSE}
+library(knitr)
+library(rmdformats)
+
+options(max.print = "75")
+
+opts_chunk$set(
+  cache = TRUE,
+  comment = NA,
+  message = FALSE,
+  warning = FALSE,
+  root.dir = normalizePath("."))
+
+opts_knit$set(width = 65)
+```
+
+```{r}
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(ggplot2)
+
+figPath <- "../figure/Screening/"
+dataPath <- "../data/Screening/"
+outPath <- "../output/Screening/"
+```
+
+```{r}
+dd <- read.csv(paste0(dataPath, "CTG_OnlyLowSeedingFiltered_Pathways_Targets-FH.csv"), stringsAsFactors = F)
+
+dd$Dose <- sapply(dd$Treatment, function(x){
+  xx <- strsplit(x, "_")
+  xx[[1]][length(xx[[1]])]
+})
+
+dd$Group_CTG <- "No hit"
+dd$Group_CTG[dd$Bin == "LC"] <- "Hit"
+
+dd$Drug <- dd$Treatment
+dd$Drug <- gsub("_5$", "", dd$Drug)
+dd$Drug <- gsub("_0.5$", "", dd$Drug)
+dd$Drug <- gsub("_0$", "", dd$Drug)
+dd$Drug <- gsub("_25$", "", dd$Drug)
+dd$Drug <- gsub("_250$", "", dd$Drug)
+dd$Drug <- gsub("_0.25$", "", dd$Drug)
+dd$Drug <- gsub("_2.5$", "", dd$Drug)
+dd$Drug <- gsub("_0.25_0.025$", "", dd$Drug)
+
+cc <- c("Cell-cycle progression","cell-cycle progression", "cell-cycle progression ", "Cell-cycle progression ")
+
+dd$Pathway[dd$Pathway  %in% cc] <- "Cell cycle progression"
+
+dd$Pathway <- gsub(" Pathway", "", dd$Pathway)
+dd$Pathway <- gsub(" PATHWAY", "", dd$Pathway)
+dd$Pathway <- gsub(" pathway", "", dd$Pathway)
+dd$Pathway <- gsub(" Signaling", "", dd$Pathway)
+dd$Pathway <- gsub(" Signalling", "", dd$Pathway)
+dd$Pathway <- gsub(" signalling", "", dd$Pathway)
+dd$Pathway <- gsub("TGF beta", "TGFb", dd$Pathway)
+dd$Pathway <- gsub("JNK and p38 MAPK", "JNK/p38/MAPK", dd$Pathway)
+dd$Pathway <- gsub("NK-Kappa B", "NFkB", dd$Pathway)
+dd$Pathway <- gsub("miscellaneous", "Miscellaneous", dd$Pathway)
+
+dd$Target <- gsub("miscellaneous", "Miscellaneous", dd$Target)
+
+
+##----- replace everything above 100 with 100 in percFC.
+dd$Perc_FC[dd$Perc_FC > 100] <- 100
+dd$ZScore[dd$ZScore > 15] <- 15
+dd$ZScore[dd$ZScore < -15] <- -15
+
+colnames(dd)[colnames(dd) == "Group_CTG"] <- "Hit"
+dd$Hit[dd$Hit == "Hit"] <- "Yes"
+dd$Hit[dd$Hit == "No hit"] <- "No"
+
+```
+
+
+```{r}
+# pdf("DensityPlot_PercFC_Zscore.pdf", height = 5, width = 6)
+# ggplot(dd, aes(x = Perc_FC, color = Patient)) +
+#   geom_density(size = 1) + theme_bw()
+# 
+# ggplot(dd, aes(x = ZScore, color = Patient)) +
+#   geom_density(size = 1) + theme_bw()
+# dev.off()
+```
+
+
+# Heatmap for each PDTO
+Read the data containing the Mahalanobis values.
+## PDTO1: yPDB516_LT1
+```{r}
+currentPat <- "yPDB516_LT1"
+
+## 624
+dd1 <- dd[dd$Patient == currentPat, ]
+dd1_hits <- dd1[dd1$Hit == "Yes", ]
+
+## 858
+m1 <- read.csv(paste0(dataPath, "CB_PMC15_PrimaryScreen_mp_P01.csv"), 
+  stringsAsFactors = F, check.names = F)
+
+m1$treatment.id <- gsub("uM", "", m1$treatment.id)
+m1$Mahalanobis[m1$Mahalanobis > 150] <- 150
+# m1$Mahalanobis[m1$Mahalanobis < 5] <- 5
+
+## 624 common
+length(intersect(m1$treatment.id, dd1$Treatment))
+
+
+m1_hits <- m1[m1$mp.value < 0.05 & m1$Mahalanobis > 5, ]
+# m1_hits <- m1[m1$mp.value < 0.05 , ]
+
+
+## 87 common (87 and 185)
+length(intersect(dd1_hits$Treatment, m1_hits$treatment.id))
+
+
+dd1 <- merge(dd1, m1, by.x = "Treatment", by.y = "treatment.id")
+```
+
+Comment/Uncomment the section below to generate plots for different doses (0.5 vs 5).
+```{r}
+
+# ##---- for dose 0.5
+# dd1_0.5 <- dd1[dd1$Dose == "0.5", ]
+# ##-- For ordering based on Pathway
+# dd1_0.5 <- dplyr::arrange(dd1_0.5, Pathway, Perc_FC, ZScore, Mahalanobis)
+# ##-- for ordering based on Target
+# rownames(dd1_0.5) <- dd1_0.5$Treatment
+# pData1 <- dd1_0.5
+# currentDose <- "0.5"
+
+
+##---- for dose 5
+dd1_5 <- dd1[dd1$Dose == "5", ]
+##-- For ordering based on Pathway
+dd1_5 <- dplyr::arrange(dd1_5, Pathway, Perc_FC, ZScore, Mahalanobis)
+##-- for ordering based on Target
+# dd1_5 <- dplyr::arrange(dd1_5, Target, ZScore, Perc_FC)
+rownames(dd1_5) <- dd1_5$Treatment
+pData1 <- dd1_5
+currentDose <- "5"
+
+```
+
+```{r}
+##------------ set parametres
+
+textSize <- 18
+# annotColumn <- "Target"
+annotColumn <- "Pathway"
+
+
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(pData1[, annotColumn])
+
+# groupCol <- c("gray20", "gray80")
+# groupCol <- brewer.pal(8, "Dark2")[1:2]
+
+##---------  for patient 1
+pathwayHm1 <- Heatmap(pData1[, annotColumn, drop = F],
+  name = annotColumn,
+  col = pathwayCols,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+
+HitCol <- c("gray10", "gray90")
+names(HitCol) <- c("Yes", "No")
+
+HitHm1 <- Heatmap(pData1[, "Hit", drop = F],
+  name = "\nHit",
+  col = HitCol,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+ctgHm1 <- Heatmap(
+  pData1[, grepl("ZScore", colnames(pData1)), drop = F],
+  # col = viridis::viridis(100), 
+  col = circlize::colorRamp2(c(
+    -15,
+    0,
+    15
+  ),
+    c("navy",
+      "azure",
+      "yellow3")),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  column_title = "yP516_LT1",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  # row_order = rownames(dd1),
+  # name = paste0("CTG Z-score\n",
+  #   "[",
+  #   round(min(pData1$ZScore), 1),
+  #   ", ",
+  #   round(max(pData1$ZScore), 1), "]"),
+  heatmap_legend_param = list(
+    title = "\nCTG Z-score\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous", at = c(-15, 0, 15),  legend_height = unit(3, "cm")
+  )
+)
+
+fcHm1 <- Heatmap(pData1[, grepl("Perc_FC", colnames(pData1)), drop = F], 
+  col = viridis::magma(100),
+  width = unit(12, "mm"), 
+  cluster_rows = F, 
+  show_row_names = F,
+  column_names_gp = gpar(fontsize = textSize),
+  # row_names_gp = gpar(fontsize = 8),
+  # name = paste0("Percent FC\n", 
+  #   "[", 
+  #   round(min(pData1$Perc_FC), 1), 
+  #   ", ", 
+  #   round(max(pData1$Perc_FC), 1), "]"),
+  heatmap_legend_param = list(
+          title = "\nPercent FC\n",
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          color_bar = "continuous",  at =c(0, 50, 100), legend_height = unit(3, "cm")
+        ))
+
+mahHm1 <- Heatmap(
+  pData1[, grepl("Mahalanobis", colnames(pData1)), drop = F],
+  # col = viridis::viridis(100), 
+  col = rev(viridis::viridis(100, end = 0.90)),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  # column_title = "yP516_LT1",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nMahalanobis\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(0, 75, 150),
+    legend_height = unit(3, "cm")
+  )
+)
+
+
+pdf(
+  paste0(figPath,
+    "Figure_6a_CTG_yP516_LT1_Dose",
+    currentDose,
+    "_",
+    annotColumn,
+    ".pdf"
+  ),
+  height = 14,
+  width = 10
+)
+draw(
+   pathwayHm1 +  fcHm1 + ctgHm1 + mahHm1 + HitHm1 ,
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(2, 2, 2, 2), "mm")
+    )
+dev.off()
+```
+
+## PDTO2: yPJF520_LT1
+```{r}
+currentPat <- "yPJF520_LT1"
+
+## 624
+dd2 <- dd[dd$Patient == currentPat, ]
+dd2_hits <- dd2[dd2$Hit == "Yes", ]
+
+## 858
+m2 <- read.csv(paste0(dataPath, "CB_PMC15_PrimaryScreen_mp_P02.csv"), 
+  stringsAsFactors = F, check.names = F)
+
+m2$treatment.id <- gsub("uM", "", m2$treatment.id)
+m2$Mahalanobis[m2$Mahalanobis > 150] <- 150
+
+## 624 common
+length(intersect(m2$treatment.id, dd2$Treatment))
+
+
+m2_hits <- m2[m2$mp.value < 0.05 & m2$Mahalanobis > 5, ]
+# m1_hits <- m1[m1$mp.value < 0.05 , ]
+
+## 94 common (124 and 198) --> 76% are confirmed
+length(intersect(dd2_hits$Treatment, m2_hits$treatment.id))
+
+dd2 <- merge(dd2, m2, by.x = "Treatment", by.y = "treatment.id")
+
+```
+
+
+Comment/Uncomment the section below to generate plots for different doses (0.5 vs 5).
+```{r}
+#---- for dose 0.5
+dd1_0.5 <- dd2[dd2$Dose == "0.5", ]
+##-- For ordering based on Pathway
+dd1_0.5 <- dplyr::arrange(dd1_0.5, Pathway, Perc_FC, ZScore)
+##-- for ordering based on Target
+# dd1_0.5 <- dplyr::arrange(dd1_0.5, Target, ZScore, Perc_FC)
+rownames(dd1_0.5) <- dd1_0.5$Treatment
+pData1 <- dd1_0.5
+currentDose <- "0.5"
+
+
+# ##---- for dose 5
+# dd1_5 <- dd2[dd2$Dose == "5", ]
+# ##-- For ordering based on Pathway
+# dd1_5 <- dplyr::arrange(dd1_5, Pathway, Perc_FC, ZScore)
+# ##-- for ordering based on Target
+# # dd1_5 <- dplyr::arrange(dd1_5, Target, ZScore, Perc_FC)
+# rownames(dd1_5) <- dd1_5$Treatment
+# pData1 <- dd1_5
+# currentDose <- "5"
+```
+
+```{r}
+##------------ set parametres
+
+textSize <- 18
+# annotColumn <- "Target"
+annotColumn <- "Pathway"
+
+
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(pData1[, annotColumn])
+
+
+##---------  for patient 1
+pathwayHm1 <- Heatmap(pData1[, annotColumn, drop = F],
+  name = annotColumn,
+  col = pathwayCols,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+
+HitCol <- c("gray10", "gray90")
+names(HitCol) <- c("Yes", "No")
+
+HitHm1 <- Heatmap(pData1[, "Hit", drop = F],
+  name = "\nHit",
+  col = HitCol,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+ctgHm1 <- Heatmap(
+  pData1[, grepl("ZScore", colnames(pData1)), drop = F],
+  # col = viridis::viridis(100), 
+  col = circlize::colorRamp2(c(
+    -15,
+    0,
+    15
+  ),
+    c("navy",
+      "azure",
+      "yellow3")),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  column_title = "yP520_LT1",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nCTG Z-score\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous", at = c(-15, 0, 15),  legend_height = unit(3, "cm")
+  )
+)
+
+fcHm1 <- Heatmap(pData1[, grepl("Perc_FC", colnames(pData1)), drop = F], 
+  col = viridis::magma(100),
+  width = unit(12, "mm"), 
+  cluster_rows = F, 
+  show_row_names = F,
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+          title = "\nPercent FC\n",
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          color_bar = "continuous",  at = c(0, 50, 100), legend_height = unit(3, "cm")
+        ))
+
+
+mahHm1 <- Heatmap(
+  pData1[, grepl("Mahalanobis", colnames(pData1)), drop = F],
+  col = rev(viridis::viridis(100, end = 0.90)),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nMahalanobis\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(0, 75, 150),
+    legend_height = unit(3, "cm")
+  )
+)
+
+pdf(
+  paste0(figPath,
+    "Figure_6a_CTG_yP520_LT1_Dose",
+    currentDose,
+    "_",
+    annotColumn,
+    ".pdf"
+  ),
+  height = 14,
+  width = 10
+)
+draw(
+   pathwayHm1 +  fcHm1 + ctgHm1 + mahHm1 +HitHm1 ,
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(2, 2, 2, 2), "mm")
+    )
+dev.off()
+```
+
+
+## PDTO3: yPMK295_LT
+```{r}
+currentPat <- "yPMK295_LT"
+
+## 624
+dd3 <- dd[dd$Patient == currentPat, ]
+dd3_hits <- dd3[dd3$Hit == "Yes", ]
+
+## 858
+m3 <- read.csv(paste0(dataPath, "CB_PMC15_PrimaryScreen_mp_P03.csv"), 
+  stringsAsFactors = F, check.names = F)
+
+m3$treatment.id <- gsub("uM", "", m3$treatment.id)
+m3$Mahalanobis[m3$Mahalanobis > 150] <- 150
+
+
+m3_hits <- m3[m3$mp.value < 0.05 & m3$Mahalanobis > 5, ]
+
+## 88 common (90 and 208): 98%
+length(intersect(dd3_hits$Treatment, m3_hits$treatment.id))
+
+
+m2_hits <- m2[m2$mp.value < 0.05 & m2$Mahalanobis > 5, ]
+
+dd3 <- merge(dd3, m3, by.x = "Treatment", by.y = "treatment.id")
+```
+
+
+Comment/Uncomment the section below to generate plots for different doses (0.5 vs 5).
+```{r}
+##---- for dose 0.5
+dd1_0.5 <- dd3[dd3$Dose == "0.5", ]
+##-- For ordering based on Pathway
+dd1_0.5 <- dplyr::arrange(dd1_0.5, Pathway, Perc_FC, ZScore)
+##-- for ordering based on Target
+# dd1_0.5 <- dplyr::arrange(dd1_0.5, Target, ZScore, Perc_FC)
+rownames(dd1_0.5) <- dd1_0.5$Treatment
+pData1 <- dd1_0.5
+currentDose <- "0.5"
+
+
+##---- for dose 5
+# dd1_5 <- dd3[dd3$Dose == "5", ]
+# ##-- For ordering based on Pathway
+# dd1_5 <- dplyr::arrange(dd1_5, Pathway, Perc_FC, ZScore)
+# ##-- for ordering based on Target
+# # dd1_5 <- dplyr::arrange(dd1_5, Target, ZScore, Perc_FC)
+# rownames(dd1_5) <- dd1_5$Treatment
+# pData1 <- dd1_5
+# currentDose <- "5"
+```
+
+```{r}
+##------------ set parametres
+
+textSize <- 18
+annotColumn <- "Pathway"
+
+
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(pData1[, annotColumn])
+
+
+##---------  for patient 1
+pathwayHm1 <- Heatmap(pData1[, annotColumn, drop = F],
+  name = annotColumn,
+  col = pathwayCols,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+
+HitCol <- c("gray10", "gray90")
+names(HitCol) <- c("Yes", "No")
+
+HitHm1 <- Heatmap(pData1[, "Hit", drop = F],
+  name = "\nHit",
+  col = HitCol,
+  width = unit(5, "mm") , 
+  row_order = rownames(pData1), 
+  show_row_names = F,
+  show_heatmap_legend = T,
+  column_names_gp = gpar(fontsize = textSize),
+   heatmap_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          grid_height = unit(0.8, "cm")
+  ))
+
+ctgHm1 <- Heatmap(
+  pData1[, grepl("ZScore", colnames(pData1)), drop = F],
+  # col = viridis::viridis(100), 
+  col = circlize::colorRamp2(c(
+    -15,
+    0,
+    15
+  ),
+    c("navy",
+      "azure",
+      "yellow3")),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  column_title = "yP295_LT1",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nCTG Z-score\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous", at = c(-15, 0, 15),  legend_height = unit(3, "cm")
+  )
+)
+
+fcHm1 <- Heatmap(pData1[, grepl("Perc_FC", colnames(pData1)), drop = F], 
+  col = viridis::magma(100),
+  width = unit(12, "mm"), 
+  cluster_rows = F, 
+  show_row_names = F,
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+          title = "\nPercent FC\n",
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+          color_bar = "continuous",  at =c(0, 50, 100), legend_height = unit(3, "cm")
+        ))
+
+
+mahHm1 <- Heatmap(
+  pData1[, grepl("Mahalanobis", colnames(pData1)), drop = F],
+  # col = viridis::viridis(100), 
+  col = rev(viridis::viridis(100, end = 0.90)),
+  width = unit(12, "mm"),
+  show_row_names = F,
+  cluster_rows = F,
+  # column_title = "yP516_LT1",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nMahalanobis\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(0, 75, 150),
+    legend_height = unit(3, "cm")
+  )
+)
+
+pdf(
+  paste0(figPath,
+    "Figure_6a_CTG_yP295_LT_Dose",
+    currentDose,
+    "_",
+    annotColumn,
+    ".pdf"
+  ),
+  height = 14,
+  width = 10
+)
+draw(
+   pathwayHm1 +  fcHm1 + ctgHm1 + mahHm1 + HitHm1 ,
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(2, 2, 2, 2), "mm")
+    )
+dev.off()
+```
+
+
+### combine data deom all patients
+```{r}
+dds <- Reduce(rbind, list(dd1, dd2, dd3))
+
+dds$Patient <- gsub("yPMK295", "yP295", dds$Patient)
+dds$Patient <- gsub("yPDB516", "yP516", dds$Patient)
+dds$Patient <- gsub("yPJF520", "yP520", dds$Patient)
+
+dds <- dds[, !grepl("original", colnames(dds))]
+
+write.csv(dds, paste0(outPath, "CTG_FC_Mahalanobis_3patients.csv"), row.names = F)
+```
+
+
+# Heatmap for all PDTOs 
+Generate heatmaps by including data from all PDTOs to summarise teh results of the primary screening. Some of these results reproduces the two heatmaps represented in Suppl Figure 11a.
+```{r}
+dd$Patient <- gsub("yPMK295", "yP295", dd$Patient)
+dd$Patient <- gsub("yPDB516", "yP516", dd$Patient)
+dd$Patient <- gsub("yPJF520", "yP520", dd$Patient)
+```
+
+## Dose 0.5
+### CTG
+```{r}
+library(tidyr)
+
+textSize <- 15
+
+dd0 <- dd %>% 
+  dplyr::select(Patient, Treatment, ZScore, Pathway, Dose) %>% 
+  dplyr::filter(Dose == "0.5") %>% 
+  tidyr::pivot_wider(names_from = Patient, values_from = ZScore) %>% 
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd0[, annotColumn])
+
+
+pathwayHm0 <- HeatmapAnnotation(Pathway = dd0[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  # name = "",
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+ctgHm0 <- Heatmap(
+  dd0[, grepl("^yP", colnames(dd0)), drop = F],
+  col = circlize::colorRamp2(c(-15,
+    0,
+    15),
+    c("navy",
+      "azure",
+      "yellow3")),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  column_title = "CTG\n(0.5)",
+  
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  name = paste0("CTG Z-score\n",
+    "[",
+    round(min(dd$ZScore), 1),
+    ", ",
+    round(max(dd$ZScore), 1), "]"),
+  heatmap_legend_param = list(
+    title = "\nCTG Z-score\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(-15, 0, 15),
+    legend_height = unit(3, "cm")
+  ),
+  left_annotation = pathwayHm0
+)
+
+pdf(
+  paste0(figPath, "CTG_3Patients_Dose0.5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(ctgHm0 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+```
+
+### FC
+```{r}
+
+library(tidyr)
+dd00 <- dd %>%
+  dplyr::select(Patient, Treatment, Perc_FC, Pathway, Dose) %>%
+  dplyr::filter(Dose == 0.5) %>%
+  tidyr::pivot_wider(names_from = Patient, values_from = Perc_FC) %>%
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd00[, annotColumn])
+
+
+pathwayHm00 <- HeatmapAnnotation(Pathway = dd00[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+
+pats <- c("yP516_LT1", "yP520_LT1", "yP295_LT")
+
+
+ctgHm00 <- Heatmap(
+  dd00[, pats, drop = F],
+  col = viridis::magma(100),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  cluster_columns = F,
+  column_title = "FC\n(0.5)",
+  name = paste0("Percent FC\n",
+    "[",
+    round(min(dd$Perc_FC), 1),
+    ", ",
+    round(max(dd$Perc_FC), 1), "]"),
+  heatmap_legend_param = list(
+    title = "\nPercent FC\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous", at = c(0, 50, 100), legend_height = unit(3, "cm")
+  ), left_annotation = pathwayHm00
+)
+
+
+pdf(
+  paste0(figPath, "Supp_Figure_11a_PercFC_3Patients_Dose0.5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(ctgHm00 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+# 
+```
+
+### Mahalanobis
+```{r}
+
+getCols <- c("Treatment", "Mahalanobis", "Pathway", "Dose")
+
+ddM <-
+  merge(dd1[, getCols], dd2[, c("Treatment", "Mahalanobis")], by = "Treatment")
+colnames(ddM)[colnames(ddM) == "Mahalanobis.x"] <- "yP516_LT1"
+colnames(ddM)[colnames(ddM) == "Mahalanobis.y"] <- "yP520_LT1"
+
+ddM <-
+  merge(ddM, dd3[, c("Treatment", "Mahalanobis")], by = "Treatment")
+colnames(ddM)[colnames(ddM) == "Mahalanobis"] <- "yP295_LT"
+
+
+
+library(tidyr)
+
+dd000 <- ddM %>%
+  dplyr::filter(Dose == 0.5) %>%
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd[, annotColumn])
+
+pathwayHm00 <- HeatmapAnnotation(Pathway = dd000[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+
+pats <- c("yP516_LT1", "yP520_LT1", "yP295_LT")
+
+
+mahHm00 <- Heatmap(
+  dd000[, pats, drop = F],
+  col = rev(viridis::viridis(100, end = 0.90)),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  cluster_columns = F,
+  column_title = "Mahalanobis\n(0.5)",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nMahalanobis\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(0, 75, 150),
+    legend_height = unit(3, "cm")
+  ), left_annotation = pathwayHm00
+)
+
+pdf(
+  paste0(figPath, "Mahalanobis_3Patients_Dose0.5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(mahHm00 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+```
+
+
+
+
+## Dose 5
+### CTG
+```{r}
+library(tidyr)
+
+textSize <- 15
+
+dd0 <- dd %>% 
+  dplyr::select(Patient, Treatment, ZScore, Pathway, Dose) %>% 
+  dplyr::filter(Dose == "5") %>% 
+  tidyr::pivot_wider(names_from = Patient, values_from = ZScore) %>% 
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd0[, annotColumn])
+
+pathwayHm0 <- HeatmapAnnotation(Pathway = dd0[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+ctgHm0 <- Heatmap(
+  dd0[, grepl("^yP", colnames(dd0)), drop = F],
+  col = circlize::colorRamp2(c(-15,
+    0,
+    15),
+    c("navy",
+      "azure",
+      "yellow3")),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  column_title = "CTG\n(5)",
+  
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  name = paste0("CTG Z-score\n",
+    "[",
+    round(min(dd$ZScore), 1),
+    ", ",
+    round(max(dd$ZScore), 1), "]"),
+  heatmap_legend_param = list(
+    title = "\nCTG Z-score\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(-15, 0, 15),
+    legend_height = unit(3, "cm")
+  ),
+  left_annotation = pathwayHm0
+)
+
+pdf(
+  paste0(figPath, "CTG_3Patients_Dose5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(ctgHm0 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+```
+
+### FC
+```{r}
+
+library(tidyr)
+dd00 <- dd %>%
+  dplyr::select(Patient, Treatment, Perc_FC, Pathway, Dose) %>%
+  dplyr::filter(Dose == 5) %>%
+  tidyr::pivot_wider(names_from = Patient, values_from = Perc_FC) %>%
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd00[, annotColumn])
+
+pathwayHm00 <- HeatmapAnnotation(Pathway = dd00[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+
+pats <- c("yP516_LT1", "yP520_LT1", "yP295_LT")
+
+
+ctgHm00 <- Heatmap(
+  dd00[, pats, drop = F],
+  col = viridis::magma(100),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  cluster_columns = F,
+  column_title = "FC\n(5)",
+  name = paste0("Percent FC\n",
+    "[",
+    round(min(dd$Perc_FC), 1),
+    ", ",
+    round(max(dd$Perc_FC), 1), "]"),
+  heatmap_legend_param = list(
+    title = "\nPercent FC\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous", at = c(0, 50, 100), legend_height = unit(3, "cm")
+  ), left_annotation = pathwayHm00
+)
+
+
+
+pdf(
+  paste0(figPath, "Supp_Figure_11a_PercFC_3Patients_Dose5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(ctgHm00 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+# 
+```
+
+### Mahalanobis
+```{r}
+
+getCols <- c("Treatment", "Mahalanobis", "Pathway", "Dose")
+
+ddM <-
+  merge(dd1[, getCols], dd2[, c("Treatment", "Mahalanobis")], by = "Treatment")
+colnames(ddM)[colnames(ddM) == "Mahalanobis.x"] <- "yP516_LT1"
+colnames(ddM)[colnames(ddM) == "Mahalanobis.y"] <- "yP520_LT1"
+
+ddM <-
+  merge(ddM, dd3[, c("Treatment", "Mahalanobis")], by = "Treatment")
+colnames(ddM)[colnames(ddM) == "Mahalanobis"] <- "yP295_LT"
+
+
+
+library(tidyr)
+
+dd000 <- ddM %>%
+  dplyr::filter(Dose == 5) %>%
+  data.frame()
+
+annotColumn <- "Pathway"
+pathwayCols <- c(brewer.pal(8, "Set1"),
+  brewer.pal(8, "Dark2")[-c(5, 7)],
+  brewer.pal(8, "Accent")[1:2]
+  )
+
+names(pathwayCols) <- unique(dd[, annotColumn])
+
+pathwayHm00 <- HeatmapAnnotation(Pathway = dd000[, annotColumn],  
+  which = "row", show_annotation_name = F,
+  col = list(Pathway = pathwayCols),
+  width = unit(5, "mm") ,
+   annotation_legend_param = list(
+          title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+          labels_gp = gpar(fontsize = textSize),
+     grid_height = unit(0.8, "cm")
+  )
+)
+
+
+pats <- c("yP516_LT1", "yP520_LT1", "yP295_LT")
+
+
+mahHm00 <- Heatmap(
+  dd000[, pats, drop = F],
+  col = rev(viridis::viridis(100, end = 0.90)),
+  width = unit(30, "mm"),
+  show_row_names = F,
+  cluster_rows = T,
+  cluster_columns = F,
+  column_title = "Mahalanobis\n(5)",
+  column_title_gp = gpar(fontsize = textSize + 2),
+  column_names_gp = gpar(fontsize = textSize),
+  heatmap_legend_param = list(
+    title = "\nMahalanobis\n",
+    title_gp = gpar(fontsize = textSize + 2, fontface = "italic"),
+    labels_gp = gpar(fontsize = textSize),
+    color_bar = "continuous",
+    at = c(0, 75, 150),
+    legend_height = unit(3, "cm")
+  ), left_annotation = pathwayHm00
+)
+
+pdf(
+  paste0(figPath, "Mahalanobis_3Patients_Dose5_",  annotColumn, ".pdf"),
+  height = 10,
+  width = 6
+)
+draw(mahHm00 , 
+  heatmap_legend_side = "left",
+      legend_title_gp = gpar(fontsize = textSize, fontface = "italic"),
+  ht_gap = unit(c(8), "mm"))
+dev.off()
+```
+
+
